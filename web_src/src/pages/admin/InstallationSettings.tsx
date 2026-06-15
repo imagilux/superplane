@@ -9,6 +9,8 @@ import React, { useCallback, useEffect, useState } from "react";
 type InstallationSettingsResponse = {
   allow_private_network_access: boolean;
   password_login_disabled: boolean;
+  password_login_disable_allowed: boolean;
+  password_login_disable_reason?: string;
   effective_blocked_http_hosts: string[];
   effective_private_ip_ranges: string[];
   blocked_http_hosts_overridden: boolean;
@@ -38,12 +40,12 @@ type DerivedState = {
   blockedHosts: string[];
   privateRanges: string[];
   hasNetworkChanges: boolean;
+  hasIdentityChanges: boolean;
   hasSMTPChanges: boolean;
 };
 
 type NetworkPolicySectionProps = {
   allowPrivateNetworkAccess: boolean;
-  passwordLoginDisabled: boolean;
   blockedHosts: string[];
   blockedHTTPHostsOverridden: boolean;
   hasChanges: boolean;
@@ -51,6 +53,15 @@ type NetworkPolicySectionProps = {
   privateIPRangesOverridden: boolean;
   saving: boolean;
   onChange: (checked: boolean) => void;
+  onSave: () => void;
+};
+
+type IdentitySectionProps = {
+  passwordLoginDisabled: boolean;
+  passwordLoginDisableAllowed: boolean;
+  passwordLoginDisableReason?: string;
+  hasChanges: boolean;
+  saving: boolean;
   onPasswordLoginChange: (checked: boolean) => void;
   onSave: () => void;
 };
@@ -120,10 +131,8 @@ const getDerivedState = (
   return {
     blockedHosts: settings?.effective_blocked_http_hosts ?? [],
     privateRanges: settings?.effective_private_ip_ranges ?? [],
-    hasNetworkChanges:
-      settings != null &&
-      (allowPrivateNetworkAccess !== settings.allow_private_network_access ||
-        passwordLoginDisabled !== settings.password_login_disabled),
+    hasNetworkChanges: settings != null && allowPrivateNetworkAccess !== settings.allow_private_network_access,
+    hasIdentityChanges: settings != null && passwordLoginDisabled !== settings.password_login_disabled,
     hasSMTPChanges:
       settings != null &&
       (form.enabled !== settings.smtp_enabled ||
@@ -162,7 +171,6 @@ const buildSMTPRequestBody = (form: SMTPFormState) => {
 
 const NetworkPolicySection = ({
   allowPrivateNetworkAccess,
-  passwordLoginDisabled,
   blockedHosts,
   blockedHTTPHostsOverridden,
   hasChanges,
@@ -170,7 +178,6 @@ const NetworkPolicySection = ({
   privateIPRangesOverridden,
   saving,
   onChange,
-  onPasswordLoginChange,
   onSave,
 }: NetworkPolicySectionProps) => (
   <div className="rounded-xl border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-6 shadow-sm">
@@ -217,23 +224,6 @@ const NetworkPolicySection = ({
             onCheckedChange={onChange}
           />
         </div>
-      </div>
-    </div>
-
-    <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 shadow-sm">
-      <div className="flex items-center justify-between gap-4">
-        <div>
-          <p className="text-sm font-semibold text-gray-900">Disable email/password login</p>
-          <Text className="mt-1 text-xs text-gray-600">
-            Hide the email/password form and reject password logins for the whole installation. SSO logins and existing
-            sessions are unaffected. This is independent of signup blocking (BLOCK_SIGNUP).
-          </Text>
-        </div>
-        <Switch
-          data-testid="installation-password-login-switch"
-          checked={passwordLoginDisabled}
-          onCheckedChange={onPasswordLoginChange}
-        />
       </div>
     </div>
 
@@ -294,6 +284,73 @@ const NetworkPolicySection = ({
     </div>
   </div>
 );
+
+const IdentitySection = ({
+  passwordLoginDisabled,
+  passwordLoginDisableAllowed,
+  passwordLoginDisableReason,
+  hasChanges,
+  saving,
+  onPasswordLoginChange,
+  onSave,
+}: IdentitySectionProps) => {
+  // Re-enabling password login is always allowed; only disabling can lock the admin out.
+  const toggleDisabled = !passwordLoginDisabled && !passwordLoginDisableAllowed;
+  const showDisableWarning = toggleDisabled && passwordLoginDisableReason != null && passwordLoginDisableReason !== "";
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-6 shadow-sm">
+      <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
+        <div className="max-w-2xl">
+          <div className="inline-flex rounded-full bg-slate-900 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-white">
+            Identity
+          </div>
+          <h2 className="mt-4 text-lg font-semibold text-gray-900">Login methods</h2>
+          <Text className="mt-2 text-sm text-gray-600">
+            Control which authentication methods are available to users when signing in to this installation.
+          </Text>
+        </div>
+      </div>
+
+      <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 shadow-sm">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <p className="text-sm font-semibold text-gray-900">Disable email/password login</p>
+            <Text className="mt-1 text-xs text-gray-600">
+              Hide the email/password form and reject password logins for the whole installation. SSO logins and
+              existing sessions are unaffected. This is independent of signup blocking (BLOCK_SIGNUP).
+            </Text>
+          </div>
+          <Switch
+            data-testid="installation-password-login-switch"
+            checked={passwordLoginDisabled}
+            disabled={toggleDisabled}
+            onCheckedChange={onPasswordLoginChange}
+          />
+        </div>
+        {showDisableWarning ? (
+          <Text data-testid="installation-password-login-warning" className="mt-3 text-xs text-amber-700">
+            {passwordLoginDisableReason}
+          </Text>
+        ) : null}
+      </div>
+
+      <div className="mt-6 flex flex-wrap items-center gap-3 border-t border-slate-200 pt-6">
+        <Button
+          type="button"
+          data-testid="installation-identity-save"
+          onClick={onSave}
+          disabled={saving || !hasChanges}
+        >
+          {saving ? "Saving..." : "Save identity settings"}
+        </Button>
+        <Text className="text-xs text-gray-500">
+          Changes apply without a restart and may take a few seconds to propagate across all app instances.
+        </Text>
+      </div>
+    </div>
+  );
+};
 
 const SMTPFields = ({ form, passwordConfigured, onFieldChange }: SMTPFieldsProps) => (
   <div className="mt-6 space-y-4">
@@ -442,6 +499,7 @@ const useInstallationSettingsState = () => {
   const [allowPrivateNetworkAccess, setAllowPrivateNetworkAccess] = useState(false);
   const [passwordLoginDisabled, setPasswordLoginDisabled] = useState(false);
   const [savingNetwork, setSavingNetwork] = useState(false);
+  const [savingIdentity, setSavingIdentity] = useState(false);
   const [smtpForm, setSMTPForm] = useState<SMTPFormState>(emptySMTPForm);
   const [savingSMTP, setSavingSMTP] = useState(false);
 
@@ -499,7 +557,6 @@ const useInstallationSettingsState = () => {
       await patchSettings(
         {
           allow_private_network_access: allowPrivateNetworkAccess,
-          password_login_disabled: passwordLoginDisabled,
         },
         "Network settings updated",
         "Failed to update installation settings",
@@ -509,7 +566,24 @@ const useInstallationSettingsState = () => {
     } finally {
       setSavingNetwork(false);
     }
-  }, [allowPrivateNetworkAccess, passwordLoginDisabled, patchSettings]);
+  }, [allowPrivateNetworkAccess, patchSettings]);
+
+  const saveIdentitySettings = useCallback(async () => {
+    setSavingIdentity(true);
+    try {
+      await patchSettings(
+        {
+          password_login_disabled: passwordLoginDisabled,
+        },
+        "Identity settings updated",
+        "Failed to update identity settings",
+      );
+    } catch (error) {
+      showErrorToast(error instanceof Error ? error.message : "Failed to update identity settings");
+    } finally {
+      setSavingIdentity(false);
+    }
+  }, [passwordLoginDisabled, patchSettings]);
 
   const saveSMTPSettings = useCallback(async () => {
     setSavingSMTP(true);
@@ -535,12 +609,14 @@ const useInstallationSettingsState = () => {
     allowPrivateNetworkAccess,
     passwordLoginDisabled,
     savingNetwork,
+    savingIdentity,
     smtpForm,
     savingSMTP,
     setAllowPrivateNetworkAccess,
     setPasswordLoginDisabled,
     setSMTPField,
     saveNetworkSettings,
+    saveIdentitySettings,
     saveSMTPSettings,
   };
 };
@@ -552,12 +628,14 @@ const InstallationSettings: React.FC = () => {
     allowPrivateNetworkAccess,
     passwordLoginDisabled,
     savingNetwork,
+    savingIdentity,
     smtpForm,
     savingSMTP,
     setAllowPrivateNetworkAccess,
     setPasswordLoginDisabled,
     setSMTPField,
     saveNetworkSettings,
+    saveIdentitySettings,
     saveSMTPSettings,
   } = useInstallationSettingsState();
 
@@ -583,7 +661,6 @@ const InstallationSettings: React.FC = () => {
 
       <NetworkPolicySection
         allowPrivateNetworkAccess={allowPrivateNetworkAccess}
-        passwordLoginDisabled={passwordLoginDisabled}
         blockedHosts={derivedState.blockedHosts}
         blockedHTTPHostsOverridden={settings?.blocked_http_hosts_overridden ?? false}
         hasChanges={derivedState.hasNetworkChanges}
@@ -591,8 +668,17 @@ const InstallationSettings: React.FC = () => {
         privateIPRangesOverridden={settings?.private_ip_ranges_overridden ?? false}
         saving={savingNetwork}
         onChange={setAllowPrivateNetworkAccess}
-        onPasswordLoginChange={setPasswordLoginDisabled}
         onSave={saveNetworkSettings}
+      />
+
+      <IdentitySection
+        passwordLoginDisabled={passwordLoginDisabled}
+        passwordLoginDisableAllowed={settings?.password_login_disable_allowed ?? true}
+        passwordLoginDisableReason={settings?.password_login_disable_reason}
+        hasChanges={derivedState.hasIdentityChanges}
+        saving={savingIdentity}
+        onPasswordLoginChange={setPasswordLoginDisabled}
+        onSave={saveIdentitySettings}
       />
 
       <SMTPSection

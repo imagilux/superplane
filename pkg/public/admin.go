@@ -34,20 +34,22 @@ type paginatedResponse struct {
 }
 
 type installationSettingsResponse struct {
-	AllowPrivateNetworkAccess  bool     `json:"allow_private_network_access"`
-	PasswordLoginDisabled      bool     `json:"password_login_disabled"`
-	EffectiveBlockedHTTPHosts  []string `json:"effective_blocked_http_hosts"`
-	EffectivePrivateIPRanges   []string `json:"effective_private_ip_ranges"`
-	BlockedHTTPHostsOverridden bool     `json:"blocked_http_hosts_overridden"`
-	PrivateIPRangesOverridden  bool     `json:"private_ip_ranges_overridden"`
-	SMTPEnabled                bool     `json:"smtp_enabled"`
-	SMTPHost                   string   `json:"smtp_host"`
-	SMTPPort                   int      `json:"smtp_port"`
-	SMTPUsername               string   `json:"smtp_username"`
-	SMTPFromName               string   `json:"smtp_from_name"`
-	SMTPFromEmail              string   `json:"smtp_from_email"`
-	SMTPUseTLS                 bool     `json:"smtp_use_tls"`
-	SMTPPasswordConfigured     bool     `json:"smtp_password_configured"`
+	AllowPrivateNetworkAccess   bool     `json:"allow_private_network_access"`
+	PasswordLoginDisabled       bool     `json:"password_login_disabled"`
+	PasswordLoginDisableAllowed bool     `json:"password_login_disable_allowed"`
+	PasswordLoginDisableReason  string   `json:"password_login_disable_reason,omitempty"`
+	EffectiveBlockedHTTPHosts   []string `json:"effective_blocked_http_hosts"`
+	EffectivePrivateIPRanges    []string `json:"effective_private_ip_ranges"`
+	BlockedHTTPHostsOverridden  bool     `json:"blocked_http_hosts_overridden"`
+	PrivateIPRangesOverridden   bool     `json:"private_ip_ranges_overridden"`
+	SMTPEnabled                 bool     `json:"smtp_enabled"`
+	SMTPHost                    string   `json:"smtp_host"`
+	SMTPPort                    int      `json:"smtp_port"`
+	SMTPUsername                string   `json:"smtp_username"`
+	SMTPFromName                string   `json:"smtp_from_name"`
+	SMTPFromEmail               string   `json:"smtp_from_email"`
+	SMTPUseTLS                  bool     `json:"smtp_use_tls"`
+	SMTPPasswordConfigured      bool     `json:"smtp_password_configured"`
 }
 
 type installationSettingsRequest struct {
@@ -86,7 +88,8 @@ func parseSorting(r *http.Request) (sortBy, sortDirection string) {
 }
 
 func (s *Server) adminGetInstallationNetworkSettings(w http.ResponseWriter, r *http.Request) {
-	response, err := s.buildInstallationSettingsResponse()
+	account, _ := middleware.GetAccountFromContext(r.Context())
+	response, err := s.buildInstallationSettingsResponse(account)
 	if err != nil {
 		log.Errorf("admin: failed to load installation settings: %v", err)
 		http.Error(w, "Failed to load installation settings", http.StatusInternalServerError)
@@ -108,8 +111,11 @@ func (s *Server) adminUpdateInstallationNetworkSettings(w http.ResponseWriter, r
 		log.Errorf("admin: failed to update installation settings: %v", err)
 
 		statusCode := http.StatusInternalServerError
-		if errors.Is(err, errInvalidInstallationSettingsRequest) {
+		switch {
+		case errors.Is(err, errInvalidInstallationSettingsRequest):
 			statusCode = http.StatusBadRequest
+		case errors.Is(err, errPasswordLoginDisableLockout):
+			statusCode = http.StatusConflict
 		}
 
 		http.Error(w, err.Error(), statusCode)
@@ -120,7 +126,8 @@ func (s *Server) adminUpdateInstallationNetworkSettings(w http.ResponseWriter, r
 		s.registry.HTTPContext().InvalidatePolicyCache()
 	}
 
-	response, err := s.buildInstallationSettingsResponse()
+	account, _ := middleware.GetAccountFromContext(r.Context())
+	response, err := s.buildInstallationSettingsResponse(account)
 	if err != nil {
 		log.Errorf("admin: failed to load updated installation settings: %v", err)
 		http.Error(w, "Failed to update installation settings", http.StatusInternalServerError)
@@ -132,7 +139,52 @@ func (s *Server) adminUpdateInstallationNetworkSettings(w http.ResponseWriter, r
 
 var errInvalidInstallationSettingsRequest = errors.New("invalid installation settings request")
 
+var errPasswordLoginDisableLockout = errors.New(
+	"can't disable password login: your account has no SSO login, so you'd lock yourself out " +
+		"(only installation admins can re-enable it, and password login would be off). Sign in once via " +
+		"your organization's SSO to link this account, or in Installation Admin → Accounts promote an " +
+		"SSO-capable account to admin and disable this one, then try again.",
+)
+
+// guardPasswordLoginDisable refuses to turn email/password login off when the
+// installation admin making the change has no non-password way back in. Only
+// installation admins can re-enable the setting, and once it is off they can
+// authenticate solely via SSO/OAuth — so a password-only admin would be locked
+// out. Turning the feature back on is never guarded.
+func (s *Server) guardPasswordLoginDisable(ctx context.Context) error {
+	metadata, err := models.GetInstallationMetadata()
+	if err != nil {
+		return err
+	}
+
+	// Already off — this request introduces no new lockout.
+	if metadata.PasswordLoginDisabled {
+		return nil
+	}
+
+	account, ok := middleware.GetAccountFromContext(ctx)
+	if !ok || account == nil {
+		return errPasswordLoginDisableLockout
+	}
+
+	canSSO, err := account.CanLoginWithoutPassword()
+	if err != nil {
+		return err
+	}
+	if !canSSO {
+		return errPasswordLoginDisableLockout
+	}
+
+	return nil
+}
+
 func (s *Server) updateInstallationSettings(ctx context.Context, req installationSettingsRequest) error {
+	if req.PasswordLoginDisabled != nil && *req.PasswordLoginDisabled {
+		if err := s.guardPasswordLoginDisable(ctx); err != nil {
+			return err
+		}
+	}
+
 	return database.Conn().Transaction(func(tx *gorm.DB) error {
 		if req.AllowPrivateNetworkAccess != nil || req.PasswordLoginDisabled != nil {
 			metadata, err := models.GetInstallationMetadataInTransaction(tx)
@@ -161,7 +213,7 @@ func (s *Server) updateInstallationSettings(ctx context.Context, req installatio
 	})
 }
 
-func (s *Server) buildInstallationSettingsResponse() (installationSettingsResponse, error) {
+func (s *Server) buildInstallationSettingsResponse(account *models.Account) (installationSettingsResponse, error) {
 	policy, err := networkpolicy.ResolveHTTPPolicy()
 	if err != nil {
 		return installationSettingsResponse{}, err
@@ -173,12 +225,29 @@ func (s *Server) buildInstallationSettingsResponse() (installationSettingsRespon
 	}
 
 	response := installationSettingsResponse{
-		AllowPrivateNetworkAccess:  policy.AllowPrivateNetworkAccess,
-		PasswordLoginDisabled:      metadata.PasswordLoginDisabled,
-		EffectiveBlockedHTTPHosts:  policy.BlockedHosts,
-		EffectivePrivateIPRanges:   policy.PrivateIPRanges,
-		BlockedHTTPHostsOverridden: policy.BlockedHostsOverridden,
-		PrivateIPRangesOverridden:  policy.PrivateIPRangesOverridden,
+		AllowPrivateNetworkAccess:   policy.AllowPrivateNetworkAccess,
+		PasswordLoginDisabled:       metadata.PasswordLoginDisabled,
+		PasswordLoginDisableAllowed: true,
+		EffectiveBlockedHTTPHosts:   policy.BlockedHosts,
+		EffectivePrivateIPRanges:    policy.PrivateIPRanges,
+		BlockedHTTPHostsOverridden:  policy.BlockedHostsOverridden,
+		PrivateIPRangesOverridden:   policy.PrivateIPRangesOverridden,
+	}
+
+	// Gate the "disable password login" toggle for the current admin: if turning
+	// it on would leave them with no non-password way back in, the UI greys it
+	// out with guidance instead of letting them lock themselves out.
+	if !metadata.PasswordLoginDisabled {
+		canSSO := false
+		if account != nil {
+			if ok, providerErr := account.CanLoginWithoutPassword(); providerErr == nil {
+				canSSO = ok
+			}
+		}
+		if !canSSO {
+			response.PasswordLoginDisableAllowed = false
+			response.PasswordLoginDisableReason = errPasswordLoginDisableLockout.Error()
+		}
 	}
 
 	emailSettings, err := models.FindEmailSettings(models.EmailProviderSMTP)

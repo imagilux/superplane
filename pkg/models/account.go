@@ -152,6 +152,19 @@ func (a *Account) GetAccountProviders() ([]AccountProvider, error) {
 	return providers, nil
 }
 
+// CanLoginWithoutPassword reports whether the account has at least one external
+// identity link (SSO/OAuth). Such an account can still authenticate when
+// email/password login is disabled installation-wide; a password-only account
+// cannot. Used to prevent an admin from locking themselves out.
+func (a *Account) CanLoginWithoutPassword() (bool, error) {
+	providers, err := a.GetAccountProviders()
+	if err != nil {
+		return false, err
+	}
+
+	return len(providers) > 0, nil
+}
+
 func (a *Account) GetAccountProvider(provider string) (*AccountProvider, error) {
 	var account AccountProvider
 	err := database.Conn().

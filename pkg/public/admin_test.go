@@ -316,6 +316,83 @@ func TestAdminInstallationNetworkSettings(t *testing.T) {
 	})
 }
 
+func TestAdminPasswordLoginDisableGuard(t *testing.T) {
+	server, r, token := setupAdminTestServer(t)
+
+	// Start from a known state: the acting installation admin is password-only.
+	require.NoError(t, database.Conn().
+		Where("account_id = ?", r.Account.ID).
+		Delete(&models.AccountProvider{}).Error)
+
+	disableBody, err := json.Marshal(map[string]bool{"password_login_disabled": true})
+	require.NoError(t, err)
+
+	patch := func(body []byte) *httptest.ResponseRecorder {
+		return execRequest(server, requestParams{
+			method:      "PATCH",
+			path:        "/admin/api/installation/network-settings",
+			body:        body,
+			authCookie:  token,
+			contentType: "application/json",
+		})
+	}
+	getSettings := func() installationSettingsResponse {
+		resp := execRequest(server, requestParams{
+			method:     "GET",
+			path:       "/admin/api/installation/network-settings",
+			authCookie: token,
+		})
+		require.Equal(t, http.StatusOK, resp.Code)
+		var out installationSettingsResponse
+		require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &out))
+		return out
+	}
+
+	t.Run("password-only admin is blocked from disabling password login", func(t *testing.T) {
+		resp := patch(disableBody)
+		assert.Equal(t, http.StatusConflict, resp.Code)
+		assert.Contains(t, resp.Body.String(), "lock yourself out")
+
+		metadata, err := models.GetInstallationMetadata()
+		require.NoError(t, err)
+		assert.False(t, metadata.PasswordLoginDisabled, "setting must not change when blocked")
+
+		settings := getSettings()
+		assert.False(t, settings.PasswordLoginDisableAllowed)
+		assert.NotEmpty(t, settings.PasswordLoginDisableReason)
+	})
+
+	t.Run("admin with an SSO link can disable password login", func(t *testing.T) {
+		require.NoError(t, database.Conn().Create(&models.AccountProvider{
+			AccountID:  r.Account.ID,
+			Provider:   models.ProviderOIDCPrefix + "00000000-0000-0000-0000-000000000001",
+			ProviderID: "sub-admin",
+			Email:      r.Account.Email,
+		}).Error)
+
+		assert.True(t, getSettings().PasswordLoginDisableAllowed)
+
+		resp := patch(disableBody)
+		assert.Equal(t, http.StatusOK, resp.Code)
+
+		metadata, err := models.GetInstallationMetadata()
+		require.NoError(t, err)
+		assert.True(t, metadata.PasswordLoginDisabled)
+	})
+
+	t.Run("re-enabling password login is never guarded", func(t *testing.T) {
+		enableBody, err := json.Marshal(map[string]bool{"password_login_disabled": false})
+		require.NoError(t, err)
+
+		resp := patch(enableBody)
+		assert.Equal(t, http.StatusOK, resp.Code)
+
+		metadata, err := models.GetInstallationMetadata()
+		require.NoError(t, err)
+		assert.False(t, metadata.PasswordLoginDisabled)
+	})
+}
+
 func unsetEnvForAdminTest(t *testing.T, key string) {
 	t.Helper()
 
