@@ -84,6 +84,7 @@ func (m *MockOIDCProvider) handleDiscovery(w http.ResponseWriter, _ *http.Reques
 		"subject_types_supported":               []string{"public"},
 		"id_token_signing_alg_values_supported": []string{"RS256"},
 		"scopes_supported":                      []string{"openid", "email", "profile"},
+		"claims_supported":                      []string{"sub", "email", "email_verified", "name", "preferred_username"},
 	})
 }
 

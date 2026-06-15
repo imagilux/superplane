@@ -36,3 +36,7 @@ func (s *OIDCProvidersService) UpdateOIDCProvider(ctx context.Context, req *pb.U
 func (s *OIDCProvidersService) DeleteOIDCProvider(ctx context.Context, req *pb.DeleteOIDCProviderRequest) (*pb.DeleteOIDCProviderResponse, error) {
 	return oidcproviders.DeleteOIDCProvider(ctx, req)
 }
+
+func (s *OIDCProvidersService) DiscoverOIDCProvider(ctx context.Context, req *pb.DiscoverOIDCProviderRequest) (*pb.DiscoverOIDCProviderResponse, error) {
+	return oidcproviders.DiscoverOIDCProvider(ctx, req)
+}

@@ -5,7 +5,9 @@ import {
   oidcProvidersDescribeOidcProvider,
   oidcProvidersUpdateOidcProvider,
   oidcProvidersDeleteOidcProvider,
+  oidcProvidersDiscoverOidcProvider,
 } from "@/api-client/sdk.gen";
+import type { OidcProvidersDiscoverOidcProviderResponse } from "@/api-client/types.gen";
 import { withOrganizationHeader } from "@/lib/withOrganizationHeader";
 
 export const oidcProviderKeys = {
@@ -130,6 +132,20 @@ export const useDeleteOidcProvider = (organizationId: string) => {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: oidcProviderKeys.list(organizationId) });
+    },
+  });
+};
+
+export const useDiscoverOidcProvider = (organizationId: string) => {
+  return useMutation<OidcProvidersDiscoverOidcProviderResponse, Error, string>({
+    mutationFn: async (issuerUrl: string) => {
+      const response = await oidcProvidersDiscoverOidcProvider(
+        withOrganizationHeader({
+          organizationId,
+          body: { issuerUrl },
+        }),
+      );
+      return response.data ?? {};
     },
   });
 };

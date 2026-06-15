@@ -464,6 +464,9 @@ func DefaultAuthorizationRules() map[string]AuthorizationRule {
 		pbOIDCProviders.OIDCProviders_DescribeOIDCProvider_FullMethodName: {Resource: "oidc_providers", Action: "read", DomainType: models.DomainTypeOrganization},
 		pbOIDCProviders.OIDCProviders_UpdateOIDCProvider_FullMethodName:   {Resource: "oidc_providers", Action: "update", DomainType: models.DomainTypeOrganization},
 		pbOIDCProviders.OIDCProviders_DeleteOIDCProvider_FullMethodName:   {Resource: "oidc_providers", Action: "delete", DomainType: models.DomainTypeOrganization},
+		// Discovery probes an admin-supplied issuer URL server-side; gate it to
+		// admins (create) to limit the SSRF surface.
+		pbOIDCProviders.OIDCProviders_DiscoverOIDCProvider_FullMethodName: {Resource: "oidc_providers", Action: "create", DomainType: models.DomainTypeOrganization},
 	}
 
 	return rules

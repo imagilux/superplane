@@ -14,6 +14,7 @@ import { KeyRound, Copy, ArrowLeft } from "lucide-react";
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useOidcProvider, useUpdateOidcProvider, useDeleteOidcProvider } from "@/hooks/useOidcProviders";
+import { IssuerVerifier } from "./components/IssuerVerifier";
 
 interface SingleSignOnDetailProps {
   organizationId: string;
@@ -240,6 +241,11 @@ export function SingleSignOnDetail({ organizationId }: SingleSignOnDetailProps) 
                   onChange={(e) => setEditIssuerUrl(e.target.value)}
                   required
                   data-testid="sso-detail-edit-issuer-url"
+                />
+                <IssuerVerifier
+                  issuerUrl={editIssuerUrl}
+                  organizationId={organizationId}
+                  onScopesDiscovered={setEditScopes}
                 />
               </div>
               <div>

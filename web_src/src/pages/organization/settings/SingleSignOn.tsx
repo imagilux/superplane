@@ -18,6 +18,7 @@ import { KeyRound, Copy } from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useOidcProviders, useCreateOidcProvider, useDeleteOidcProvider } from "@/hooks/useOidcProviders";
+import { IssuerVerifier } from "./components/IssuerVerifier";
 
 interface SingleSignOnProps {
   organizationId: string;
@@ -363,6 +364,11 @@ export function SingleSignOn({ organizationId }: SingleSignOnProps) {
                     placeholder="https://idp.example.com"
                     required
                     data-testid="sso-create-issuer-url"
+                  />
+                  <IssuerVerifier
+                    issuerUrl={issuerUrl}
+                    organizationId={organizationId}
+                    onScopesDiscovered={setScopes}
                   />
                 </div>
                 <div>

@@ -129,3 +129,37 @@ func TestOIDCProviderLifecycle(t *testing.T) {
 		assert.Equal(t, codes.NotFound, status.Code(err))
 	})
 }
+
+func TestDiscoverOIDCProvider(t *testing.T) {
+	r := support.Setup(t)
+	ctx := authCtx(r.Organization.ID.String(), r.User.String())
+	mock := support.NewMockOIDCProvider(t, "discover-client")
+
+	t.Run("valid issuer reports scopes, claims, and email_verified support", func(t *testing.T) {
+		resp, err := DiscoverOIDCProvider(ctx, &pb.DiscoverOIDCProviderRequest{IssuerUrl: mock.Issuer})
+		require.NoError(t, err)
+		assert.True(t, resp.Valid)
+		assert.Empty(t, resp.Error)
+		assert.Equal(t, mock.Issuer, resp.Issuer)
+		assert.Contains(t, resp.ScopesSupported, "openid")
+		assert.Contains(t, resp.ClaimsSupported, "email")
+		assert.True(t, resp.EmailVerifiedSupported)
+	})
+
+	t.Run("unreachable or non-OIDC issuer returns valid=false with an error", func(t *testing.T) {
+		resp, err := DiscoverOIDCProvider(ctx, &pb.DiscoverOIDCProviderRequest{IssuerUrl: mock.Issuer + "/not-an-issuer"})
+		require.NoError(t, err)
+		assert.False(t, resp.Valid)
+		assert.NotEmpty(t, resp.Error)
+	})
+
+	t.Run("issuer_url is required", func(t *testing.T) {
+		_, err := DiscoverOIDCProvider(ctx, &pb.DiscoverOIDCProviderRequest{IssuerUrl: ""})
+		assert.Equal(t, codes.InvalidArgument, status.Code(err))
+	})
+
+	t.Run("requires authentication", func(t *testing.T) {
+		_, err := DiscoverOIDCProvider(context.Background(), &pb.DiscoverOIDCProviderRequest{IssuerUrl: mock.Issuer})
+		assert.Equal(t, codes.Unauthenticated, status.Code(err))
+	})
+}

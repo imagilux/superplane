@@ -81,6 +81,18 @@ service OIDCProviders {
       tags: "OIDCProviders";
     };
   }
+
+  rpc DiscoverOIDCProvider(DiscoverOIDCProviderRequest) returns (DiscoverOIDCProviderResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/oidc-providers/discover"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Discover OIDC issuer metadata";
+      description: "Fetches the issuer's /.well-known/openid-configuration to validate it and report the supported scopes and claims, so the provider form can auto-resolve.";
+      tags: "OIDCProviders";
+    };
+  }
 }
 
 // OIDCProvider is the API representation of a per-organization OIDC SSO provider.
@@ -155,3 +167,20 @@ message DeleteOIDCProviderRequest {
 }
 
 message DeleteOIDCProviderResponse {}
+
+message DiscoverOIDCProviderRequest {
+  string issuer_url = 1;
+}
+
+// DiscoverOIDCProviderResponse reports the result of probing an issuer's
+// discovery document. valid=false with a populated error means the issuer was
+// unreachable or not a valid OIDC provider (a normal outcome the form renders,
+// not a request error).
+message DiscoverOIDCProviderResponse {
+  bool valid = 1;
+  string error = 2;
+  string issuer = 3;
+  repeated string scopes_supported = 4;
+  repeated string claims_supported = 5;
+  bool email_verified_supported = 6;
+}
