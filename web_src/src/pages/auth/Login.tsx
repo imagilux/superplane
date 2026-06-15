@@ -17,6 +17,15 @@ type AuthConfig = {
   passwordLoginEnabled: boolean;
   signupEnabled: boolean;
   magicCodeEnabled: boolean;
+  ssoEnabled: boolean;
+};
+
+type SsoProviderOption = {
+  orgId: string;
+  orgName: string;
+  providerSlug: string;
+  displayName: string;
+  loginUrl: string;
 };
 
 const isValidRedirectPath = (path: string | null): path is string => {
@@ -55,6 +64,19 @@ const getProviderLabel = (provider: string) => {
   }
 };
 
+const fetchSsoProviders = async (email: string): Promise<SsoProviderOption[]> => {
+  const response = await fetch(`/auth/sso/providers?email=${encodeURIComponent(email)}`, {
+    credentials: "include",
+  });
+
+  if (!response.ok) {
+    throw new Error("Failed to look up SSO providers. Please try again.");
+  }
+
+  const data = (await response.json()) as { providers?: SsoProviderOption[] };
+  return data.providers || [];
+};
+
 type MagicCodeStep = "email" | "code";
 
 const LastUsedHint: React.FC<{ label: string }> = ({ label }) => (
@@ -67,6 +89,7 @@ export const Login: React.FC = () => {
     passwordLoginEnabled: false,
     signupEnabled: false,
     magicCodeEnabled: false,
+    ssoEnabled: false,
   });
   const [configLoading, setConfigLoading] = useState(true);
   const [configError, setConfigError] = useState<string | null>(null);
@@ -85,6 +108,12 @@ export const Login: React.FC = () => {
   const [magicCodeEmail, setMagicCodeEmail] = useState("");
   const [magicCode, setMagicCode] = useState("");
   const [showPasswordLogin, setShowPasswordLogin] = useState(false);
+
+  const [showSsoForm, setShowSsoForm] = useState(false);
+  const [ssoEmail, setSsoEmail] = useState("");
+  const [ssoLoading, setSsoLoading] = useState(false);
+  const [ssoError, setSsoError] = useState<string | null>(null);
+  const [ssoProviderOptions, setSsoProviderOptions] = useState<SsoProviderOption[]>([]);
 
   const [lastUsedMethod, setLastUsedMethod] = useState<LastUsedLoginMethod | null>(null);
 
@@ -197,6 +226,7 @@ export const Login: React.FC = () => {
             passwordLoginEnabled: Boolean(data.passwordLoginEnabled),
             signupEnabled: Boolean(data.signupEnabled),
             magicCodeEnabled: Boolean(data.magicCodeEnabled),
+            ssoEnabled: Boolean(data.ssoEnabled),
           });
         }
       } catch {
@@ -227,6 +257,7 @@ export const Login: React.FC = () => {
   const redirectQuery = safeRedirect ? `?redirect=${encodeURIComponent(safeRedirect)}` : "";
   const showProviderButtons = hasProviders && (!isSignupMode || canSignup);
   const useMagicCodePrimary = authConfig.magicCodeEnabled && !showPasswordLogin;
+  const showSsoOption = authConfig.ssoEnabled && !isSignupMode && (!useMagicCodePrimary || magicCodeStep === "email");
 
   useEffect(() => {
     if (!canSignup && isSignupMode) {
@@ -376,6 +407,43 @@ export const Login: React.FC = () => {
       setFormError("Network error occurred");
       setSubmitLoading(false);
     }
+  };
+
+  const navigateToSsoProvider = (provider: SsoProviderOption) => {
+    recordLastUsedLoginMethod("sso");
+    const separator = provider.loginUrl.includes("?") ? "&" : "?";
+    const redirectSuffix = safeRedirect ? `${separator}redirect=${encodeURIComponent(safeRedirect)}` : "";
+    window.location.href = `${provider.loginUrl}${redirectSuffix}`;
+  };
+
+  const handleSsoSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSsoError(null);
+    setSsoProviderOptions([]);
+
+    if (!ssoEmail.trim()) {
+      setSsoError("Email is required");
+      return;
+    }
+
+    setSsoLoading(true);
+
+    try {
+      const options = await fetchSsoProviders(ssoEmail.trim());
+
+      if (options.length === 0) {
+        setSsoError("No SSO configured for that email address.");
+      } else if (options.length === 1) {
+        navigateToSsoProvider(options[0]);
+        return;
+      } else {
+        setSsoProviderOptions(options);
+      }
+    } catch {
+      setSsoError("Failed to look up SSO providers. Please try again.");
+    }
+
+    setSsoLoading(false);
   };
 
   const handleSignupSubmit = async (e: React.FormEvent) => {
@@ -753,6 +821,87 @@ export const Login: React.FC = () => {
                   {lastUsedMethod === provider && <LastUsedHint label={getProviderLabel(provider)} />}
                 </div>
               ))}
+            </div>
+          )}
+
+          {!configLoading && showSsoOption && (
+            <div className="mt-3">
+              {!showSsoForm ? (
+                <div>
+                  <Button
+                    variant="outline"
+                    className="w-full justify-center"
+                    onClick={() => {
+                      setShowSsoForm(true);
+                      setSsoError(null);
+                      setSsoProviderOptions([]);
+                    }}
+                  >
+                    Sign in with SSO
+                  </Button>
+                  {lastUsedMethod === "sso" && <LastUsedHint label="SSO" />}
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {ssoError && (
+                    <div className="rounded-md border border-red-300 bg-white px-3 py-1 text-sm text-red-500">
+                      {ssoError}
+                    </div>
+                  )}
+
+                  {ssoProviderOptions.length > 1 ? (
+                    <div className="space-y-3">
+                      <p className="text-sm text-gray-600">Choose an organization to continue:</p>
+                      {ssoProviderOptions.map((option) => (
+                        <Button
+                          key={`${option.orgId}-${option.providerSlug}`}
+                          variant="outline"
+                          className="w-full justify-center"
+                          onClick={() => navigateToSsoProvider(option)}
+                        >
+                          <span>
+                            {option.displayName}
+                            <span className="text-gray-500"> — {option.orgName}</span>
+                          </span>
+                        </Button>
+                      ))}
+                    </div>
+                  ) : (
+                    <form onSubmit={handleSsoSubmit} className="space-y-4">
+                      <div className="space-y-2">
+                        <Label>Work email</Label>
+                        <Input
+                          type="email"
+                          name="ssoEmail"
+                          placeholder="you@example.com"
+                          required
+                          autoComplete="email"
+                          value={ssoEmail}
+                          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSsoEmail(e.target.value)}
+                        />
+                      </div>
+
+                      <LoadingButton type="submit" loading={ssoLoading} loadingText="Looking up..." className="w-full">
+                        Continue with SSO
+                      </LoadingButton>
+                    </form>
+                  )}
+
+                  <div className="text-center">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowSsoForm(false);
+                        setSsoError(null);
+                        setSsoProviderOptions([]);
+                      }}
+                      className="text-sm text-gray-500 underline underline-offset-2"
+                    >
+                      Back to other sign-in options
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
 
