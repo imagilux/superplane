@@ -128,6 +128,7 @@ func (a *Handler) RegisterRoutes(router *mux.Router) {
 	// before the /auth/{provider} catch-all below (they have distinct, longer
 	// path shapes, so they never collide with it).
 	//
+	router.HandleFunc("/auth/sso/providers", a.handleSSOProviderLookup).Methods("GET")
 	router.HandleFunc("/auth/sso/{orgId}/{providerSlug}/callback", a.handleSSOCallback).Methods("GET")
 	router.HandleFunc("/auth/sso/{orgId}/{providerSlug}", a.handleSSOLogin).Methods("GET")
 
