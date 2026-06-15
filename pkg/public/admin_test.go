@@ -393,6 +393,99 @@ func TestAdminPasswordLoginDisableGuard(t *testing.T) {
 	})
 }
 
+func TestAdminPasswordLoginDisableDeactivation(t *testing.T) {
+	server, r, token := setupAdminTestServer(t)
+
+	// Acting admin has an SSO link, so the lockout guard allows the disable.
+	require.NoError(t, database.Conn().Create(&models.AccountProvider{
+		AccountID:  r.Account.ID,
+		Provider:   models.ProviderOIDCPrefix + "00000000-0000-0000-0000-0000000000aa",
+		ProviderID: "sub-admin",
+		Email:      r.Account.Email,
+	}).Error)
+
+	// A password-only account that would be stranded by disabling password login.
+	pwOnly, err := models.CreateAccount("Password Only", "pwonly@example.com")
+	require.NoError(t, err)
+	_, err = models.CreateAccountPasswordAuth(pwOnly.ID, "hash")
+	require.NoError(t, err)
+
+	getSettings := func() installationSettingsResponse {
+		resp := execRequest(server, requestParams{
+			method: "GET", path: "/admin/api/installation/network-settings", authCookie: token,
+		})
+		require.Equal(t, http.StatusOK, resp.Code)
+		var out installationSettingsResponse
+		require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &out))
+		return out
+	}
+	patch := func(body map[string]any) *httptest.ResponseRecorder {
+		b, _ := json.Marshal(body)
+		return execRequest(server, requestParams{
+			method: "PATCH", path: "/admin/api/installation/network-settings",
+			body: b, authCookie: token, contentType: "application/json",
+		})
+	}
+
+	t.Run("GET lists stranded password-only accounts", func(t *testing.T) {
+		settings := getSettings()
+		emails := []string{}
+		for _, a := range settings.PasswordOnlyAccounts {
+			emails = append(emails, a.Email)
+		}
+		assert.Contains(t, emails, "pwonly@example.com")
+		assert.True(t, settings.PasswordLoginDisableAllowed)
+	})
+
+	t.Run("disabling without confirmation is refused", func(t *testing.T) {
+		resp := patch(map[string]any{"password_login_disabled": true})
+		assert.Equal(t, http.StatusConflict, resp.Code)
+		assert.Contains(t, resp.Body.String(), "deactivate_locked_out_accounts")
+
+		metadata, err := models.GetInstallationMetadata()
+		require.NoError(t, err)
+		assert.False(t, metadata.PasswordLoginDisabled)
+
+		fresh, err := models.FindAccountByID(pwOnly.ID.String())
+		require.NoError(t, err)
+		assert.False(t, fresh.IsDeactivated())
+	})
+
+	t.Run("confirmed disable deactivates the stranded accounts", func(t *testing.T) {
+		resp := patch(map[string]any{
+			"password_login_disabled":        true,
+			"deactivate_locked_out_accounts": true,
+		})
+		assert.Equal(t, http.StatusOK, resp.Code)
+
+		metadata, err := models.GetInstallationMetadata()
+		require.NoError(t, err)
+		assert.True(t, metadata.PasswordLoginDisabled)
+
+		fresh, err := models.FindAccountByID(pwOnly.ID.String())
+		require.NoError(t, err)
+		assert.True(t, fresh.IsDeactivated())
+	})
+}
+
+func TestDeactivatedAccountSessionRejected(t *testing.T) {
+	server, r, token := setupAdminTestServer(t)
+
+	resp := execRequest(server, requestParams{
+		method: "GET", path: "/admin/api/organizations", authCookie: token,
+	})
+	require.Equal(t, http.StatusOK, resp.Code)
+
+	// Once deactivated, the same session is rejected on every authenticated request.
+	require.NoError(t, models.Deactivate(r.Account.ID.String(), time.Now()))
+	resp = execRequest(server, requestParams{
+		method: "GET", path: "/admin/api/organizations", authCookie: token,
+	})
+	// The auth middleware drops the deactivated account before it reaches any
+	// handler: a redirect to login (non-API paths) or 401 (API paths).
+	assert.Contains(t, []int{http.StatusUnauthorized, http.StatusTemporaryRedirect}, resp.Code)
+}
+
 func unsetEnvForAdminTest(t *testing.T, key string) {
 	t.Helper()
 

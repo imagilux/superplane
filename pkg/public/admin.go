@@ -33,36 +33,44 @@ type paginatedResponse struct {
 	Offset int   `json:"offset"`
 }
 
+type lockedOutAccount struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+	Name  string `json:"name"`
+}
+
 type installationSettingsResponse struct {
-	AllowPrivateNetworkAccess   bool     `json:"allow_private_network_access"`
-	PasswordLoginDisabled       bool     `json:"password_login_disabled"`
-	PasswordLoginDisableAllowed bool     `json:"password_login_disable_allowed"`
-	PasswordLoginDisableReason  string   `json:"password_login_disable_reason,omitempty"`
-	EffectiveBlockedHTTPHosts   []string `json:"effective_blocked_http_hosts"`
-	EffectivePrivateIPRanges    []string `json:"effective_private_ip_ranges"`
-	BlockedHTTPHostsOverridden  bool     `json:"blocked_http_hosts_overridden"`
-	PrivateIPRangesOverridden   bool     `json:"private_ip_ranges_overridden"`
-	SMTPEnabled                 bool     `json:"smtp_enabled"`
-	SMTPHost                    string   `json:"smtp_host"`
-	SMTPPort                    int      `json:"smtp_port"`
-	SMTPUsername                string   `json:"smtp_username"`
-	SMTPFromName                string   `json:"smtp_from_name"`
-	SMTPFromEmail               string   `json:"smtp_from_email"`
-	SMTPUseTLS                  bool     `json:"smtp_use_tls"`
-	SMTPPasswordConfigured      bool     `json:"smtp_password_configured"`
+	AllowPrivateNetworkAccess   bool               `json:"allow_private_network_access"`
+	PasswordLoginDisabled       bool               `json:"password_login_disabled"`
+	PasswordLoginDisableAllowed bool               `json:"password_login_disable_allowed"`
+	PasswordLoginDisableReason  string             `json:"password_login_disable_reason,omitempty"`
+	PasswordOnlyAccounts        []lockedOutAccount `json:"password_only_accounts"`
+	EffectiveBlockedHTTPHosts   []string           `json:"effective_blocked_http_hosts"`
+	EffectivePrivateIPRanges    []string           `json:"effective_private_ip_ranges"`
+	BlockedHTTPHostsOverridden  bool               `json:"blocked_http_hosts_overridden"`
+	PrivateIPRangesOverridden   bool               `json:"private_ip_ranges_overridden"`
+	SMTPEnabled                 bool               `json:"smtp_enabled"`
+	SMTPHost                    string             `json:"smtp_host"`
+	SMTPPort                    int                `json:"smtp_port"`
+	SMTPUsername                string             `json:"smtp_username"`
+	SMTPFromName                string             `json:"smtp_from_name"`
+	SMTPFromEmail               string             `json:"smtp_from_email"`
+	SMTPUseTLS                  bool               `json:"smtp_use_tls"`
+	SMTPPasswordConfigured      bool               `json:"smtp_password_configured"`
 }
 
 type installationSettingsRequest struct {
-	AllowPrivateNetworkAccess *bool   `json:"allow_private_network_access"`
-	PasswordLoginDisabled     *bool   `json:"password_login_disabled"`
-	SMTPEnabled               *bool   `json:"smtp_enabled"`
-	SMTPHost                  *string `json:"smtp_host"`
-	SMTPPort                  *int    `json:"smtp_port"`
-	SMTPUsername              *string `json:"smtp_username"`
-	SMTPPassword              *string `json:"smtp_password"`
-	SMTPFromName              *string `json:"smtp_from_name"`
-	SMTPFromEmail             *string `json:"smtp_from_email"`
-	SMTPUseTLS                *bool   `json:"smtp_use_tls"`
+	AllowPrivateNetworkAccess   *bool   `json:"allow_private_network_access"`
+	PasswordLoginDisabled       *bool   `json:"password_login_disabled"`
+	DeactivateLockedOutAccounts *bool   `json:"deactivate_locked_out_accounts"`
+	SMTPEnabled                 *bool   `json:"smtp_enabled"`
+	SMTPHost                    *string `json:"smtp_host"`
+	SMTPPort                    *int    `json:"smtp_port"`
+	SMTPUsername                *string `json:"smtp_username"`
+	SMTPPassword                *string `json:"smtp_password"`
+	SMTPFromName                *string `json:"smtp_from_name"`
+	SMTPFromEmail               *string `json:"smtp_from_email"`
+	SMTPUseTLS                  *bool   `json:"smtp_use_tls"`
 }
 
 func parsePagination(r *http.Request) (search string, limit, offset int) {
@@ -114,7 +122,8 @@ func (s *Server) adminUpdateInstallationNetworkSettings(w http.ResponseWriter, r
 		switch {
 		case errors.Is(err, errInvalidInstallationSettingsRequest):
 			statusCode = http.StatusBadRequest
-		case errors.Is(err, errPasswordLoginDisableLockout):
+		case errors.Is(err, errPasswordLoginDisableLockout),
+			errors.Is(err, errPasswordLoginDisableNeedsConfirmation):
 			statusCode = http.StatusConflict
 		}
 
@@ -144,6 +153,11 @@ var errPasswordLoginDisableLockout = errors.New(
 		"(only installation admins can re-enable it, and password login would be off). Sign in once via " +
 		"your organization's SSO to link this account, or in Installation Admin → Accounts promote an " +
 		"SSO-capable account to admin and disable this one, then try again.",
+)
+
+var errPasswordLoginDisableNeedsConfirmation = errors.New(
+	"disabling password login will lock out accounts that can only sign in with a password; " +
+		"resend with deactivate_locked_out_accounts=true to deactivate them.",
 )
 
 // guardPasswordLoginDisable refuses to turn email/password login off when the
@@ -179,9 +193,39 @@ func (s *Server) guardPasswordLoginDisable(ctx context.Context) error {
 }
 
 func (s *Server) updateInstallationSettings(ctx context.Context, req installationSettingsRequest) error {
+	var lockedOutAccountIDs []string
+
 	if req.PasswordLoginDisabled != nil && *req.PasswordLoginDisabled {
 		if err := s.guardPasswordLoginDisable(ctx); err != nil {
 			return err
+		}
+
+		// Disabling password login strands accounts that can only sign in with a
+		// password. On the off->on transition (the guard no-ops when already off),
+		// require the admin to confirm, then deactivate them in the same
+		// transaction so none are left silently unable to log in.
+		meta, err := models.GetInstallationMetadata()
+		if err != nil {
+			return err
+		}
+		if !meta.PasswordLoginDisabled {
+			actingID := ""
+			if account, ok := middleware.GetAccountFromContext(ctx); ok && account != nil {
+				actingID = account.ID.String()
+			}
+
+			stranded, err := models.FindActivePasswordOnlyAccounts(actingID)
+			if err != nil {
+				return err
+			}
+			if len(stranded) > 0 {
+				if req.DeactivateLockedOutAccounts == nil || !*req.DeactivateLockedOutAccounts {
+					return errPasswordLoginDisableNeedsConfirmation
+				}
+				for _, acc := range stranded {
+					lockedOutAccountIDs = append(lockedOutAccountIDs, acc.ID.String())
+				}
+			}
 		}
 	}
 
@@ -201,6 +245,12 @@ func (s *Server) updateInstallationSettings(ctx context.Context, req installatio
 			metadata.UpdatedAt = time.Now()
 
 			if err := models.UpdateInstallationMetadataInTransaction(tx, metadata); err != nil {
+				return err
+			}
+		}
+
+		for _, id := range lockedOutAccountIDs {
+			if err := models.DeactivateInTransaction(tx, id, time.Now()); err != nil {
 				return err
 			}
 		}
@@ -239,7 +289,9 @@ func (s *Server) buildInstallationSettingsResponse(account *models.Account) (ins
 	// out with guidance instead of letting them lock themselves out.
 	if !metadata.PasswordLoginDisabled {
 		canSSO := false
+		actingID := ""
 		if account != nil {
+			actingID = account.ID.String()
 			if ok, providerErr := account.CanLoginWithoutPassword(); providerErr == nil {
 				canSSO = ok
 			}
@@ -247,6 +299,19 @@ func (s *Server) buildInstallationSettingsResponse(account *models.Account) (ins
 		if !canSSO {
 			response.PasswordLoginDisableAllowed = false
 			response.PasswordLoginDisableReason = errPasswordLoginDisableLockout.Error()
+		}
+
+		// Surface password-only accounts that would be stranded by disabling
+		// password login, so the UI can list them and confirm before they are
+		// deactivated.
+		if stranded, strandedErr := models.FindActivePasswordOnlyAccounts(actingID); strandedErr == nil {
+			for _, acc := range stranded {
+				response.PasswordOnlyAccounts = append(response.PasswordOnlyAccounts, lockedOutAccount{
+					ID:    acc.ID.String(),
+					Email: acc.Email,
+					Name:  acc.Name,
+				})
+			}
 		}
 	}
 

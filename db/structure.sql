@@ -97,7 +97,8 @@ CREATE TABLE public.accounts (
     created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     installation_admin boolean DEFAULT false NOT NULL,
-    password_changed_at timestamp with time zone
+    password_changed_at timestamp with time zone,
+    deactivated_at timestamp with time zone
 );
 
 
@@ -2242,7 +2243,7 @@ SET row_security = off;
 --
 
 COPY public.schema_migrations (version, dirty) FROM stdin;
-20260615190345	f
+20260615221601	f
 \.
 
 

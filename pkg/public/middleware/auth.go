@@ -555,6 +555,10 @@ func getValidatedAccountFromCookie(r *http.Request, jwtSigner *jwt.Signer) (*mod
 		return nil, err
 	}
 
+	if account.IsDeactivated() {
+		return nil, fmt.Errorf("account is deactivated")
+	}
+
 	if !account.IsSessionFresh(iat) {
 		return nil, fmt.Errorf("session invalidated by password change")
 	}

@@ -2,15 +2,30 @@ import { Text } from "@/components/Text/text";
 import { Input, InputGroup } from "@/components/Input/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { showErrorToast, showSuccessToast } from "@/lib/toast";
 import { Switch } from "@/ui/switch";
 import React, { useCallback, useEffect, useState } from "react";
+
+type PasswordOnlyAccount = {
+  id: string;
+  email: string;
+  name: string;
+};
 
 type InstallationSettingsResponse = {
   allow_private_network_access: boolean;
   password_login_disabled: boolean;
   password_login_disable_allowed: boolean;
   password_login_disable_reason?: string;
+  password_only_accounts: PasswordOnlyAccount[];
   effective_blocked_http_hosts: string[];
   effective_private_ip_ranges: string[];
   blocked_http_hosts_overridden: boolean;
@@ -60,10 +75,12 @@ type IdentitySectionProps = {
   passwordLoginDisabled: boolean;
   passwordLoginDisableAllowed: boolean;
   passwordLoginDisableReason?: string;
+  passwordOnlyAccounts: PasswordOnlyAccount[];
+  disablingPasswordLogin: boolean;
   hasChanges: boolean;
   saving: boolean;
   onPasswordLoginChange: (checked: boolean) => void;
-  onSave: () => void;
+  onSave: (deactivateLockedOutAccounts: boolean) => void;
 };
 
 type SMTPSectionProps = {
@@ -289,14 +306,37 @@ const IdentitySection = ({
   passwordLoginDisabled,
   passwordLoginDisableAllowed,
   passwordLoginDisableReason,
+  passwordOnlyAccounts,
+  disablingPasswordLogin,
   hasChanges,
   saving,
   onPasswordLoginChange,
   onSave,
 }: IdentitySectionProps) => {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+
   // Re-enabling password login is always allowed; only disabling can lock the admin out.
   const toggleDisabled = !passwordLoginDisabled && !passwordLoginDisableAllowed;
   const showDisableWarning = toggleDisabled && passwordLoginDisableReason != null && passwordLoginDisableReason !== "";
+
+  // A real transition from "enabled" to "disabled" that would strand password-only accounts
+  // requires explicit confirmation before deactivating them. Re-enabling, or disabling when
+  // nobody is stranded, saves directly.
+  const needsConfirmation = disablingPasswordLogin && passwordOnlyAccounts.length > 0;
+
+  const handleSave = () => {
+    if (needsConfirmation) {
+      setConfirmOpen(true);
+      return;
+    }
+
+    onSave(false);
+  };
+
+  const handleConfirmDeactivate = () => {
+    onSave(true);
+    setConfirmOpen(false);
+  };
 
   return (
     <div className="rounded-xl border border-slate-200 bg-gradient-to-br from-white to-slate-50 p-6 shadow-sm">
@@ -339,7 +379,7 @@ const IdentitySection = ({
         <Button
           type="button"
           data-testid="installation-identity-save"
-          onClick={onSave}
+          onClick={handleSave}
           disabled={saving || !hasChanges}
         >
           {saving ? "Saving..." : "Save identity settings"}
@@ -348,6 +388,55 @@ const IdentitySection = ({
           Changes apply without a restart and may take a few seconds to propagate across all app instances.
         </Text>
       </div>
+
+      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <DialogContent data-testid="installation-password-login-confirm-dialog">
+          <DialogHeader>
+            <DialogTitle>Disable password login?</DialogTitle>
+            <DialogDescription asChild>
+              <div className="space-y-3">
+                <p className="text-sm text-gray-600">
+                  The following {passwordOnlyAccounts.length === 1 ? "account" : "accounts"} can sign in only with a
+                  password and would be locked out. Disabling password login will deactivate{" "}
+                  {passwordOnlyAccounts.length === 1 ? "it" : "them"} (not delete{" "}
+                  {passwordOnlyAccounts.length === 1 ? "it" : "them"}); you can reactivate{" "}
+                  {passwordOnlyAccounts.length === 1 ? "it" : "them"} later.
+                </p>
+                <ul
+                  data-testid="installation-password-login-confirm-list"
+                  className="max-h-60 space-y-1 overflow-y-auto rounded-xl border border-slate-200 bg-slate-50 p-4 text-sm text-gray-700"
+                >
+                  {passwordOnlyAccounts.map((account) => (
+                    <li key={account.id}>
+                      <span className="font-medium text-gray-900">{account.name}</span>{" "}
+                      <span className="text-gray-500">{account.email}</span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              data-testid="installation-password-login-confirm-cancel"
+              onClick={() => setConfirmOpen(false)}
+              disabled={saving}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              data-testid="installation-password-login-confirm-deactivate"
+              onClick={handleConfirmDeactivate}
+              disabled={saving}
+            >
+              {saving ? "Saving..." : "Deactivate & disable"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };
@@ -568,22 +657,27 @@ const useInstallationSettingsState = () => {
     }
   }, [allowPrivateNetworkAccess, patchSettings]);
 
-  const saveIdentitySettings = useCallback(async () => {
-    setSavingIdentity(true);
-    try {
-      await patchSettings(
-        {
+  const saveIdentitySettings = useCallback(
+    async (deactivateLockedOutAccounts: boolean) => {
+      setSavingIdentity(true);
+      try {
+        const body: Record<string, unknown> = {
           password_login_disabled: passwordLoginDisabled,
-        },
-        "Identity settings updated",
-        "Failed to update identity settings",
-      );
-    } catch (error) {
-      showErrorToast(error instanceof Error ? error.message : "Failed to update identity settings");
-    } finally {
-      setSavingIdentity(false);
-    }
-  }, [passwordLoginDisabled, patchSettings]);
+        };
+
+        if (deactivateLockedOutAccounts) {
+          body.deactivate_locked_out_accounts = true;
+        }
+
+        await patchSettings(body, "Identity settings updated", "Failed to update identity settings");
+      } catch (error) {
+        showErrorToast(error instanceof Error ? error.message : "Failed to update identity settings");
+      } finally {
+        setSavingIdentity(false);
+      }
+    },
+    [passwordLoginDisabled, patchSettings],
+  );
 
   const saveSMTPSettings = useCallback(async () => {
     setSavingSMTP(true);
@@ -675,6 +769,8 @@ const InstallationSettings: React.FC = () => {
         passwordLoginDisabled={passwordLoginDisabled}
         passwordLoginDisableAllowed={settings?.password_login_disable_allowed ?? true}
         passwordLoginDisableReason={settings?.password_login_disable_reason}
+        passwordOnlyAccounts={settings?.password_only_accounts ?? []}
+        disablingPasswordLogin={passwordLoginDisabled && !(settings?.password_login_disabled ?? false)}
         hasChanges={derivedState.hasIdentityChanges}
         saving={savingIdentity}
         onPasswordLoginChange={setPasswordLoginDisabled}

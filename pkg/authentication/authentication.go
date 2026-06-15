@@ -390,6 +390,12 @@ func (a *Handler) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if account.IsDeactivated() {
+		log.Warnf("Login attempt for deactivated account: %s", email)
+		http.Error(w, "Invalid email or password", http.StatusUnauthorized)
+		return
+	}
+
 	// Find password auth for this account
 	passwordAuth, err := models.FindAccountPasswordAuthByAccountID(account.ID)
 	if err != nil {
@@ -882,6 +888,9 @@ func (a *Handler) findOrCreateAccountForProvider(gothUser goth.User, allowSignup
 	account, err := models.FindAccountByProvider(gothUser.Provider, gothUser.UserID)
 
 	if err == nil {
+		if account.IsDeactivated() {
+			return nil, fmt.Errorf("account is deactivated")
+		}
 		if account.Email != utils.NormalizeEmail(gothUser.Email) {
 			log.Infof("Updating email for account %s from %s to %s", account.ID, account.Email, gothUser.Email)
 			err = account.UpdateEmailForProvider(gothUser.Email, gothUser.Provider, gothUser.UserID)
@@ -900,6 +909,9 @@ func (a *Handler) findOrCreateAccountForProvider(gothUser goth.User, allowSignup
 
 	account, err = models.FindAccountByEmail(gothUser.Email)
 	if err == nil {
+		if account.IsDeactivated() {
+			return nil, fmt.Errorf("account is deactivated")
+		}
 		return account, nil
 	}
 

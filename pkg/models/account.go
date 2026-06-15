@@ -15,12 +15,20 @@ type Account struct {
 	Name              string
 	InstallationAdmin bool `gorm:"default:false"`
 	PasswordChangedAt *time.Time
+	DeactivatedAt     *time.Time
 	CreatedAt         *time.Time
 	UpdatedAt         *time.Time
 }
 
 func (a *Account) IsInstallationAdmin() bool {
 	return a.InstallationAdmin
+}
+
+// IsDeactivated reports whether the account has been disabled. A deactivated
+// account is rejected at login and on every authenticated request, and cannot
+// be revived by an SSO login — it is a reversible "disabled" state, not a delete.
+func (a *Account) IsDeactivated() bool {
+	return a.DeactivatedAt != nil
 }
 
 // IsSessionFresh reports whether a token issued at the given Unix timestamp
@@ -61,6 +69,52 @@ func DemoteFromInstallationAdmin(accountID string) error {
 		Where("id = ?", accountID).
 		Update("installation_admin", false).
 		Error
+}
+
+func Deactivate(accountID string, now time.Time) error {
+	return DeactivateInTransaction(database.Conn(), accountID, now)
+}
+
+// DeactivateInTransaction disables the account (reversible; not a delete).
+// Idempotent — re-deactivating an already-disabled account is a no-op and
+// preserves the original timestamp.
+func DeactivateInTransaction(tx *gorm.DB, accountID string, now time.Time) error {
+	return tx.Model(&Account{}).
+		Where("id = ? AND deactivated_at IS NULL", accountID).
+		Update("deactivated_at", now).
+		Error
+}
+
+func Reactivate(accountID string) error {
+	return ReactivateInTransaction(database.Conn(), accountID)
+}
+
+func ReactivateInTransaction(tx *gorm.DB, accountID string) error {
+	return tx.Model(&Account{}).
+		Where("id = ?", accountID).
+		Update("deactivated_at", nil).
+		Error
+}
+
+// FindActivePasswordOnlyAccounts returns active (non-deactivated) accounts that
+// can sign in only with a password — they have a password credential and no
+// external identity link, so they would be stranded if password login were
+// disabled. The excludeID account (the admin performing the change) is omitted.
+func FindActivePasswordOnlyAccounts(excludeID string) ([]Account, error) {
+	accounts := []Account{}
+	err := database.Conn().
+		Where("deactivated_at IS NULL").
+		Where("id <> ?", excludeID).
+		Where("EXISTS (SELECT 1 FROM account_password_auth pa WHERE pa.account_id = accounts.id)").
+		Where("NOT EXISTS (SELECT 1 FROM account_providers ap WHERE ap.account_id = accounts.id)").
+		Order("email").
+		Find(&accounts).
+		Error
+	if err != nil {
+		return nil, err
+	}
+
+	return accounts, nil
 }
 
 func CreateAccount(name, email string) (*Account, error) {
