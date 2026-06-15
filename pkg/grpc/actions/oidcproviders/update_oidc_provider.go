@@ -39,11 +39,17 @@ func UpdateOIDCProvider(ctx context.Context, req *pb.UpdateOIDCProviderRequest, 
 		return nil, status.Error(codes.InvalidArgument, "client_id is required")
 	}
 
+	if err := validateGroupRoleMappings(req.GroupRoleMappings); err != nil {
+		return nil, err
+	}
+
 	provider.DisplayName = req.DisplayName
 	provider.IssuerURL = req.IssuerUrl
 	provider.ClientID = req.ClientId
 	provider.SetScopes(req.Scopes)
 	provider.SetAllowedEmailDomains(req.AllowedEmailDomains)
+	provider.SetAllowedGroups(req.AllowedGroups)
+	provider.SetGroupRoleMappings(req.GroupRoleMappings)
 	provider.Enabled = req.Enabled
 
 	if req.ClientSecret != "" {

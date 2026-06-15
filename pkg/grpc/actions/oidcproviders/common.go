@@ -28,6 +28,8 @@ func serializeOIDCProvider(p *models.OrganizationOIDCProvider) *pb.OIDCProvider 
 		HasClientSecret:     p.HasClientSecret(),
 		Scopes:              []string(p.Scopes),
 		AllowedEmailDomains: []string(p.AllowedEmailDomains),
+		AllowedGroups:       []string(p.AllowedGroups),
+		GroupRoleMappings:   p.GroupRoleMappings.Data(),
 		Enabled:             p.Enabled,
 		OrganizationId:      p.OrganizationID.String(),
 	}
@@ -64,6 +66,21 @@ func validateSlug(slug string) error {
 	}
 	if len(slug) > 64 || !slugPattern.MatchString(slug) {
 		return status.Error(codes.InvalidArgument, "slug must be 1-64 characters of lowercase letters, digits, and hyphens")
+	}
+	return nil
+}
+
+// validateGroupRoleMappings ensures each mapped role is one an IdP group may
+// confer: org_admin or org_viewer (org_owner stays with the organization
+// creator and cannot be granted via group mapping).
+func validateGroupRoleMappings(m map[string]string) error {
+	for group, role := range m {
+		if group == "" {
+			return status.Error(codes.InvalidArgument, "group_role_mappings has an empty group name")
+		}
+		if role != models.RoleOrgAdmin && role != models.RoleOrgViewer {
+			return status.Errorf(codes.InvalidArgument, "group_role_mappings: role %q must be %s or %s", role, models.RoleOrgViewer, models.RoleOrgAdmin)
+		}
 	}
 	return nil
 }

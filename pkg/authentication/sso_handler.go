@@ -1,6 +1,7 @@
 package authentication
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"os"
@@ -27,6 +28,16 @@ func ssoCallbackURL(orgID, slug string) string {
 
 func ssoRedirectError(w http.ResponseWriter, r *http.Request, reason string) {
 	http.Redirect(w, r, "/login?sso_error="+url.QueryEscape(reason), http.StatusTemporaryRedirect)
+}
+
+// ensureScope appends scope to scopes if it is not already present.
+func ensureScope(scopes []string, scope string) []string {
+	for _, s := range scopes {
+		if s == scope {
+			return scopes
+		}
+	}
+	return append(scopes, scope)
 }
 
 func emailDomain(email string) string {
@@ -57,13 +68,18 @@ func (a *Handler) providerConfig(r *http.Request, orgID, slug string) (*models.O
 		return nil, sso.Config{}, false
 	}
 
+	scopes := []string(provider.Scopes)
+	if provider.HasGroupFeatures() {
+		scopes = ensureScope(scopes, "groups")
+	}
+
 	cfg := sso.Config{
 		ID:           provider.ID.String(),
 		IssuerURL:    provider.IssuerURL,
 		ClientID:     provider.ClientID,
 		ClientSecret: secret,
 		RedirectURL:  ssoCallbackURL(orgID, slug),
-		Scopes:       []string(provider.Scopes),
+		Scopes:       scopes,
 	}
 	return provider, cfg, true
 }
@@ -182,11 +198,12 @@ func (a *Handler) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var claims struct {
-		Email             string `json:"email"`
-		EmailVerified     bool   `json:"email_verified"`
-		Name              string `json:"name"`
-		PreferredUsername string `json:"preferred_username"`
-		Picture           string `json:"picture"`
+		Email             string   `json:"email"`
+		EmailVerified     bool     `json:"email_verified"`
+		Name              string   `json:"name"`
+		PreferredUsername string   `json:"preferred_username"`
+		Picture           string   `json:"picture"`
+		Groups            []string `json:"groups"`
 	}
 	if err := idToken.Claims(&claims); err != nil || claims.Email == "" {
 		ssoRedirectError(w, r, "missing_email_claim")
@@ -208,6 +225,13 @@ func (a *Handler) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Group gate: when the provider restricts groups, the user's IdP groups must
+	// include at least one allowed group.
+	if !provider.AllowsGroups(claims.Groups) {
+		ssoRedirectError(w, r, "group_not_allowed")
+		return
+	}
+
 	gothUser := goth.User{
 		Provider:     models.ProviderOIDCPrefix + provider.ID.String(),
 		UserID:       idToken.Subject,
@@ -220,9 +244,10 @@ func (a *Handler) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:    oauthToken.Expiry,
 	}
 
-	// A successful domain-restricted login authorizes just-in-time provisioning;
+	// A domain- or group-restricted match authorizes just-in-time provisioning;
 	// otherwise fall back to the normal signup gate (invite / blockSignup).
-	allowSignup := len(provider.AllowedEmailDomains) > 0 && provider.AllowsEmailDomain(emailDomain(claims.Email))
+	allowSignup := (len(provider.AllowedEmailDomains) > 0 && provider.AllowsEmailDomain(emailDomain(claims.Email))) ||
+		(len(provider.AllowedGroups) > 0 && provider.AllowsGroups(claims.Groups))
 
 	account, err := a.findOrCreateAccountForProvider(gothUser, allowSignup)
 	if err != nil {
@@ -241,8 +266,16 @@ func (a *Handler) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	desiredRole := provider.ResolveRole(claims.Groups)
+	if desiredRole == "" {
+		desiredRole = models.RoleOrgViewer
+	}
+	// With group->role mappings configured, the IdP is the source of truth, so
+	// the role is re-synced on every login; otherwise it is set once at provision.
+	syncRole := len(provider.GroupRoleMappings.Data()) > 0
+
 	orgUUID, _ := uuid.Parse(orgID)
-	if err := a.ensureOrgMembership(orgUUID, account); err != nil {
+	if err := a.ensureOrgMembership(orgUUID, account, desiredRole, syncRole); err != nil {
 		log.Errorf("Error provisioning org membership for SSO login %s: %v", claims.Email, err)
 		ssoRedirectError(w, r, "internal_error")
 		return
@@ -270,8 +303,13 @@ func (a *Handler) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 // already an active member of the organization, create a human user and assign
 // the default viewer role. Idempotent across repeat logins. Mirrors
 // acceptInvitation's create-user-then-assign-role transaction.
-func (a *Handler) ensureOrgMembership(orgID uuid.UUID, account *models.Account) error {
-	if _, err := models.FindActiveUserByEmail(orgID.String(), account.Email); err == nil {
+func (a *Handler) ensureOrgMembership(orgID uuid.UUID, account *models.Account, desiredRole string, syncRole bool) error {
+	if existing, err := models.FindActiveUserByEmail(orgID.String(), account.Email); err == nil {
+		// Already a member. With group->role mappings configured the IdP is the
+		// source of truth, so reconcile the role on every login.
+		if syncRole {
+			return a.reconcileOrgRole(existing.ID.String(), orgID.String(), desiredRole)
+		}
 		return nil
 	}
 
@@ -280,8 +318,27 @@ func (a *Handler) ensureOrgMembership(orgID uuid.UUID, account *models.Account) 
 		if err != nil {
 			return err
 		}
-		return a.authService.AssignRole(user.ID.String(), models.RoleOrgViewer, orgID.String(), models.DomainTypeOrganization)
+		return a.authService.AssignRole(user.ID.String(), desiredRole, orgID.String(), models.DomainTypeOrganization)
 	})
+}
+
+// reconcileOrgRole makes the user's organization role match desiredRole for
+// IdP-driven RBAC. AssignRole replaces any existing role grant for the user in
+// the domain, so this is a straight set — except we never auto-demote an
+// organization owner (whose role is not group-managed).
+func (a *Handler) reconcileOrgRole(userID, orgID, desiredRole string) error {
+	roles, err := a.authService.GetUserRolesForOrg(context.Background(), userID, orgID)
+	if err != nil {
+		return err
+	}
+
+	for _, role := range roles {
+		if role.Name == models.RoleOrgOwner {
+			return nil
+		}
+	}
+
+	return a.authService.AssignRole(userID, desiredRole, orgID, models.DomainTypeOrganization)
 }
 
 // ssoDiscoveryTTL is how long OIDC discovery results are cached. Override with

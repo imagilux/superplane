@@ -38,6 +38,7 @@ type MockIDClaims struct {
 	Name          string
 	Nonce         string
 	EmailVerified bool
+	Groups        []string
 }
 
 // NewMockOIDCProvider starts a mock IdP and registers cleanup on the test.
@@ -145,6 +146,7 @@ func (m *MockOIDCProvider) handleToken(w http.ResponseWriter, r *http.Request) {
 		"email":          claims.Email,
 		"email_verified": claims.EmailVerified,
 		"name":           claims.Name,
+		"groups":         claims.Groups,
 	})
 	token.Header["kid"] = m.kid
 	signed, err := token.SignedString(m.key)

@@ -59,6 +59,8 @@ export const useCreateOidcProvider = (organizationId: string) => {
       clientSecret: string;
       scopes: string[];
       allowedEmailDomains: string[];
+      allowedGroups: string[];
+      groupRoleMappings: { [group: string]: string };
       enabled: boolean;
     }) => {
       return oidcProvidersCreateOidcProvider(
@@ -72,6 +74,8 @@ export const useCreateOidcProvider = (organizationId: string) => {
             clientSecret: params.clientSecret,
             scopes: params.scopes,
             allowedEmailDomains: params.allowedEmailDomains,
+            allowedGroups: params.allowedGroups,
+            groupRoleMappings: params.groupRoleMappings,
             enabled: params.enabled,
           },
         }),
@@ -95,6 +99,8 @@ export const useUpdateOidcProvider = (organizationId: string) => {
       clientSecret: string;
       scopes: string[];
       allowedEmailDomains: string[];
+      allowedGroups: string[];
+      groupRoleMappings: { [group: string]: string };
       enabled: boolean;
     }) => {
       return oidcProvidersUpdateOidcProvider(
@@ -107,6 +113,8 @@ export const useUpdateOidcProvider = (organizationId: string) => {
             clientSecret: params.clientSecret,
             scopes: params.scopes,
             allowedEmailDomains: params.allowedEmailDomains,
+            allowedGroups: params.allowedGroups,
+            groupRoleMappings: params.groupRoleMappings,
             enabled: params.enabled,
           },
         }),

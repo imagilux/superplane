@@ -180,3 +180,72 @@ func TestSSOLogin_UnknownProviderRedirects(t *testing.T) {
 	require.Equal(t, http.StatusTemporaryRedirect, rec.Code)
 	assert.Contains(t, rec.Header().Get("Location"), "sso_error=provider_not_found")
 }
+
+func TestSSOFlow_GroupGate(t *testing.T) {
+	h, r, mock, orgID, _, _ := setupSSO(t)
+
+	p := models.NewOIDCProvider(r.Organization.ID, nil, "gated", "Gated", "", mock.Issuer, "test-client", nil, nil, true)
+	p.SetAllowedGroups([]string{"devs"})
+	require.NoError(t, p.SetClientSecret(context.Background(), r.Encryptor, "test-secret"))
+	require.NoError(t, p.Create())
+
+	t.Run("rejects a user not in an allowed group", func(t *testing.T) {
+		state, nonce, cookie := doSSOLogin(t, h, orgID, "gated", "")
+		mock.RegisterCode("g-no", support.MockIDClaims{Sub: "s1", Email: "a@example.com", Nonce: nonce, EmailVerified: true, Groups: []string{"other"}})
+		rec := doSSOCallback(h, orgID, "gated", "g-no", state, cookie)
+		assert.Contains(t, rec.Header().Get("Location"), "sso_error=group_not_allowed")
+	})
+
+	t.Run("admits a user in an allowed group", func(t *testing.T) {
+		state, nonce, cookie := doSSOLogin(t, h, orgID, "gated", "")
+		mock.RegisterCode("g-yes", support.MockIDClaims{Sub: "s2", Email: "b@example.com", Nonce: nonce, EmailVerified: true, Groups: []string{"devs"}})
+		rec := doSSOCallback(h, orgID, "gated", "g-yes", state, cookie)
+		require.Equal(t, http.StatusTemporaryRedirect, rec.Code)
+		assert.NotContains(t, rec.Header().Get("Location"), "sso_error")
+	})
+}
+
+func TestSSOFlow_RoleMappingAndResync(t *testing.T) {
+	h, r, mock, orgID, _, _ := setupSSO(t)
+	ctx := context.Background()
+
+	p := models.NewOIDCProvider(r.Organization.ID, nil, "rbac", "RBAC", "", mock.Issuer, "test-client", nil, nil, true)
+	p.SetGroupRoleMappings(map[string]string{"admins": models.RoleOrgAdmin, "viewers": models.RoleOrgViewer})
+	require.NoError(t, p.SetClientSecret(ctx, r.Encryptor, "test-secret"))
+	require.NoError(t, p.Create())
+
+	login := func(code string, groups []string) {
+		state, nonce, cookie := doSSOLogin(t, h, orgID, "rbac", "")
+		mock.RegisterCode(code, support.MockIDClaims{Sub: "sub-rb", Email: "rb@example.com", Nonce: nonce, EmailVerified: true, Groups: groups})
+		rec := doSSOCallback(h, orgID, "rbac", code, state, cookie)
+		require.Equal(t, http.StatusTemporaryRedirect, rec.Code)
+		require.NotContains(t, rec.Header().Get("Location"), "sso_error")
+	}
+	rolesOf := func() []*authorization.RoleDefinition {
+		user, err := models.FindActiveUserByEmail(orgID, "rb@example.com")
+		require.NoError(t, err)
+		roles, err := r.AuthService.GetUserRolesForOrg(ctx, user.ID.String(), orgID)
+		require.NoError(t, err)
+		return roles
+	}
+
+	t.Run("first login maps the group to viewer", func(t *testing.T) {
+		login("rb1", []string{"viewers"})
+		assert.True(t, hasRole(rolesOf(), models.RoleOrgViewer))
+		assert.False(t, hasRole(rolesOf(), models.RoleOrgAdmin), "viewer must not imply admin")
+	})
+
+	t.Run("re-login with the admin group upgrades the role to admin", func(t *testing.T) {
+		login("rb2", []string{"admins"})
+		assert.True(t, hasRole(rolesOf(), models.RoleOrgAdmin))
+	})
+
+	t.Run("re-login with the viewer group downgrades, dropping the admin grant", func(t *testing.T) {
+		// viewer does not imply admin, so admin's absence proves the prior
+		// admin grant was actually removed (not merely shadowed by inheritance).
+		login("rb3", []string{"viewers"})
+		roles := rolesOf()
+		assert.True(t, hasRole(roles, models.RoleOrgViewer))
+		assert.False(t, hasRole(roles, models.RoleOrgAdmin), "admin grant must be removed on downgrade")
+	})
+}

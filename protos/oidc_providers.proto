@@ -112,6 +112,8 @@ message OIDCProvider {
   string created_by = 12;
   google.protobuf.Timestamp created_at = 13;
   google.protobuf.Timestamp updated_at = 14;
+  repeated string allowed_groups = 15;
+  map<string, string> group_role_mappings = 16;
 }
 
 message CreateOIDCProviderRequest {
@@ -124,6 +126,8 @@ message CreateOIDCProviderRequest {
   repeated string scopes = 7;
   repeated string allowed_email_domains = 8;
   bool enabled = 9;
+  repeated string allowed_groups = 10;
+  map<string, string> group_role_mappings = 11;
 }
 
 message CreateOIDCProviderResponse {
@@ -156,6 +160,8 @@ message UpdateOIDCProviderRequest {
   repeated string scopes = 6;
   repeated string allowed_email_domains = 7;
   bool enabled = 8;
+  repeated string allowed_groups = 9;
+  map<string, string> group_role_mappings = 10;
 }
 
 message UpdateOIDCProviderResponse {

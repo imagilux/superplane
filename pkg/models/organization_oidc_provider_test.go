@@ -145,3 +145,32 @@ func TestOrganizationOIDCProvider_EmailDomainDiscovery(t *testing.T) {
 		assert.True(t, open.AllowsEmailDomain("anything.com"))
 	})
 }
+
+func TestOrganizationOIDCProvider_Groups(t *testing.T) {
+	org := uuid.New()
+
+	t.Run("AllowsGroups: empty allows all, else requires membership", func(t *testing.T) {
+		p := NewOIDCProvider(org, nil, "g", "g", "", "https://i", "c", nil, nil, true)
+		assert.True(t, p.AllowsGroups([]string{"anything"}))
+		assert.True(t, p.AllowsGroups(nil))
+
+		p.SetAllowedGroups([]string{"devs", "ops"})
+		assert.True(t, p.AllowsGroups([]string{"ops"}))
+		assert.True(t, p.AllowsGroups([]string{"x", "devs"}))
+		assert.False(t, p.AllowsGroups([]string{"x"}))
+		assert.False(t, p.AllowsGroups(nil))
+	})
+
+	t.Run("ResolveRole: highest precedence wins; no match is empty", func(t *testing.T) {
+		p := NewOIDCProvider(org, nil, "g", "g", "", "https://i", "c", nil, nil, true)
+		assert.Equal(t, "", p.ResolveRole([]string{"devs"}))
+		assert.False(t, p.HasGroupFeatures())
+
+		p.SetGroupRoleMappings(map[string]string{"admins": RoleOrgAdmin, "viewers": RoleOrgViewer})
+		assert.True(t, p.HasGroupFeatures())
+		assert.Equal(t, RoleOrgViewer, p.ResolveRole([]string{"viewers"}))
+		assert.Equal(t, RoleOrgAdmin, p.ResolveRole([]string{"admins"}))
+		assert.Equal(t, RoleOrgAdmin, p.ResolveRole([]string{"viewers", "admins"}))
+		assert.Equal(t, "", p.ResolveRole([]string{"other"}))
+	})
+}

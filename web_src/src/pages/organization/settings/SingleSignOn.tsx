@@ -14,7 +14,7 @@ import { usePermissions } from "@/contexts/usePermissions";
 import { getApiErrorMessage } from "@/lib/errors";
 import { showErrorToast, showSuccessToast } from "@/lib/toast";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { KeyRound, Copy } from "lucide-react";
+import { KeyRound, Copy, Plus, X } from "lucide-react";
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useOidcProviders, useCreateOidcProvider, useDeleteOidcProvider } from "@/hooks/useOidcProviders";
@@ -32,6 +32,29 @@ const parseList = (value: string): string[] =>
     .split(",")
     .map((item) => item.trim())
     .filter((item) => item.length > 0);
+
+const ROLE_OPTIONS = [
+  { label: "Admin", value: "org_admin" },
+  { label: "Viewer", value: "org_viewer" },
+] as const;
+
+const DEFAULT_ROLE = "org_viewer";
+
+interface GroupRoleRow {
+  group: string;
+  role: string;
+}
+
+const rowsToMapping = (rows: GroupRoleRow[]): { [group: string]: string } => {
+  const mapping: { [group: string]: string } = {};
+  for (const row of rows) {
+    const group = row.group.trim();
+    if (group.length > 0) {
+      mapping[group] = row.role;
+    }
+  }
+  return mapping;
+};
 
 const buildCallbackUrl = (organizationId: string, slug: string): string =>
   `${window.location.origin}/auth/sso/${organizationId}/${slug || "<slug>"}/callback`;
@@ -67,6 +90,8 @@ export function SingleSignOn({ organizationId }: SingleSignOnProps) {
   const [clientSecret, setClientSecret] = useState("");
   const [scopes, setScopes] = useState(DEFAULT_SCOPES);
   const [allowedEmailDomains, setAllowedEmailDomains] = useState("");
+  const [allowedGroups, setAllowedGroups] = useState("");
+  const [groupRoleRows, setGroupRoleRows] = useState<GroupRoleRow[]>([]);
   const [enabled, setEnabled] = useState(true);
   const canCreate = canAct("oidc_providers", "create");
   const canDelete = canAct("oidc_providers", "delete");
@@ -84,7 +109,21 @@ export function SingleSignOn({ organizationId }: SingleSignOnProps) {
     setClientSecret("");
     setScopes(DEFAULT_SCOPES);
     setAllowedEmailDomains("");
+    setAllowedGroups("");
+    setGroupRoleRows([]);
     setEnabled(true);
+  };
+
+  const handleAddGroupRoleRow = () => {
+    setGroupRoleRows((rows) => [...rows, { group: "", role: DEFAULT_ROLE }]);
+  };
+
+  const handleRemoveGroupRoleRow = (index: number) => {
+    setGroupRoleRows((rows) => rows.filter((_, i) => i !== index));
+  };
+
+  const handleGroupRoleRowChange = (index: number, updates: Partial<GroupRoleRow>) => {
+    setGroupRoleRows((rows) => rows.map((row, i) => (i === index ? { ...row, ...updates } : row)));
   };
 
   const handleCreateClick = () => {
@@ -116,6 +155,8 @@ export function SingleSignOn({ organizationId }: SingleSignOnProps) {
         clientSecret,
         scopes: parseList(scopes),
         allowedEmailDomains: parseList(allowedEmailDomains),
+        allowedGroups: parseList(allowedGroups),
+        groupRoleMappings: rowsToMapping(groupRoleRows),
         enabled,
       });
       showSuccessToast("Provider created");
@@ -419,6 +460,79 @@ export function SingleSignOn({ organizationId }: SingleSignOnProps) {
                   <p className="mt-1 text-xs text-gray-500">
                     Comma-separated. Restricts which emails may use this provider and enables discovery from the login
                     page.
+                  </p>
+                </div>
+                <div>
+                  <Label className="text-gray-800 dark:text-gray-100 mb-2">Allowed Groups</Label>
+                  <Input
+                    type="text"
+                    value={allowedGroups}
+                    onChange={(e) => setAllowedGroups(e.target.value)}
+                    placeholder="e.g., engineering, platform"
+                    data-testid="sso-create-allowed-groups"
+                  />
+                  <p className="mt-1 text-xs text-gray-500">
+                    If set, only users who are a member of at least one of these IdP groups may sign in. Leave empty to
+                    allow any user (subject to allowed domains). Requires your IdP to emit a <code>groups</code> claim.
+                  </p>
+                </div>
+                <div>
+                  <Label className="text-gray-800 dark:text-gray-100 mb-2">Group → Role mapping</Label>
+                  <div className="space-y-2" data-testid="sso-create-group-role-mappings">
+                    {groupRoleRows.map((row, index) => (
+                      <div key={index} className="flex items-center gap-2">
+                        <Input
+                          type="text"
+                          value={row.group}
+                          onChange={(e) => handleGroupRoleRowChange(index, { group: e.target.value })}
+                          placeholder="IdP group name"
+                          className="flex-1"
+                          data-testid={`sso-create-group-role-group-${index}`}
+                        />
+                        <Select
+                          value={row.role}
+                          onValueChange={(value) => handleGroupRoleRowChange(index, { role: value })}
+                        >
+                          <SelectTrigger className="w-32" data-testid={`sso-create-group-role-role-${index}`}>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {ROLE_OPTIONS.map((option) => (
+                              <SelectItem key={option.value} value={option.value}>
+                                {option.label}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleRemoveGroupRoleRow(index)}
+                          className="text-gray-500 hover:text-gray-800"
+                          aria-label="Remove mapping"
+                          data-testid={`sso-create-group-role-remove-${index}`}
+                        >
+                          <X className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    ))}
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={handleAddGroupRoleRow}
+                      className="flex items-center gap-1"
+                      data-testid="sso-create-group-role-add"
+                    >
+                      <Plus className="w-4 h-4" />
+                      Add mapping
+                    </Button>
+                  </div>
+                  <p className="mt-1 text-xs text-gray-500">
+                    Users in a mapped group are granted that role on every login — the IdP is authoritative and
+                    overrides manual role changes. Unmapped users get Viewer. An organization Owner is never demoted by
+                    this.
                   </p>
                 </div>
                 <div className="flex items-center gap-3">

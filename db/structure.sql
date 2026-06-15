@@ -331,6 +331,7 @@ CREATE TABLE public.installation_metadata (
     created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
     allow_private_network_access boolean DEFAULT false NOT NULL,
+    password_login_disabled boolean DEFAULT false NOT NULL,
     CONSTRAINT installation_metadata_singleton CHECK ((id = 1))
 );
 
@@ -384,7 +385,9 @@ CREATE TABLE public.organization_oidc_providers (
     created_by uuid,
     created_at timestamp without time zone DEFAULT now() NOT NULL,
     updated_at timestamp without time zone DEFAULT now() NOT NULL,
-    deleted_at timestamp without time zone
+    deleted_at timestamp without time zone,
+    allowed_groups jsonb DEFAULT '[]'::jsonb NOT NULL,
+    group_role_mappings jsonb DEFAULT '{}'::jsonb NOT NULL
 );
 
 
@@ -2239,7 +2242,7 @@ SET row_security = off;
 --
 
 COPY public.schema_migrations (version, dirty) FROM stdin;
-20260615154956	f
+20260615190345	f
 \.
 
 

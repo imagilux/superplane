@@ -59,3 +59,27 @@ func TestSSOProviderLookup(t *testing.T) {
 		assert.Empty(t, lookup(""))
 	})
 }
+
+func TestAuthConfigPasswordLoginToggle(t *testing.T) {
+	r := support.Setup(t)
+	// passwordLoginEnabled (env) = true
+	h := NewHandler(jwt.NewSigner("test-secret"), r.Encryptor, r.AuthService, "test", "/templates", false, true, false)
+
+	passwordEnabled := func() bool {
+		rec := httptest.NewRecorder()
+		h.handleAuthConfig(rec, httptest.NewRequest("GET", "/auth/config", nil))
+		var resp map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &resp))
+		return resp["passwordLoginEnabled"] == true
+	}
+
+	assert.True(t, passwordEnabled(), "enabled by default when env allows and not disabled")
+
+	// An installation admin disables password login at runtime.
+	meta, err := models.GetInstallationMetadata()
+	require.NoError(t, err)
+	meta.PasswordLoginDisabled = true
+	require.NoError(t, models.UpdateInstallationMetadata(meta))
+
+	assert.False(t, passwordEnabled(), "the installation toggle disables password login")
+}

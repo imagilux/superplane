@@ -31,6 +31,8 @@ type OrganizationOIDCProvider struct {
 	ClientSecretEnc     string
 	Scopes              datatypes.JSONSlice[string]
 	AllowedEmailDomains datatypes.JSONSlice[string]
+	AllowedGroups       datatypes.JSONSlice[string]
+	GroupRoleMappings   datatypes.JSONType[map[string]string]
 	Enabled             bool
 	CreatedBy           *uuid.UUID
 	CreatedAt           *time.Time
@@ -84,6 +86,79 @@ func (p *OrganizationOIDCProvider) SetScopes(scopes []string) {
 // the allowed email domains. An empty result means no domain restriction.
 func (p *OrganizationOIDCProvider) SetAllowedEmailDomains(domains []string) {
 	p.AllowedEmailDomains = datatypes.JSONSlice[string](normalizeDomains(domains))
+}
+
+// SetAllowedGroups stores the IdP groups permitted to use this provider (trimmed,
+// empties dropped). Group names are case-sensitive. Empty means no restriction.
+func (p *OrganizationOIDCProvider) SetAllowedGroups(groups []string) {
+	p.AllowedGroups = datatypes.JSONSlice[string](normalizeStrings(groups))
+}
+
+// SetGroupRoleMappings stores the IdP group -> org role map (blank entries dropped).
+func (p *OrganizationOIDCProvider) SetGroupRoleMappings(m map[string]string) {
+	clean := map[string]string{}
+	for group, role := range m {
+		group = strings.TrimSpace(group)
+		if group != "" && strings.TrimSpace(role) != "" {
+			clean[group] = strings.TrimSpace(role)
+		}
+	}
+	p.GroupRoleMappings = datatypes.NewJSONType(clean)
+}
+
+// AllowsGroups reports whether a user with the given IdP groups may use this
+// provider. A provider with no configured groups imposes no restriction.
+func (p *OrganizationOIDCProvider) AllowsGroups(groups []string) bool {
+	if len(p.AllowedGroups) == 0 {
+		return true
+	}
+	allowed := make(map[string]struct{}, len(p.AllowedGroups))
+	for _, g := range p.AllowedGroups {
+		allowed[g] = struct{}{}
+	}
+	for _, g := range groups {
+		if _, ok := allowed[g]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// ResolveRole returns the highest-precedence org role mapped from the user's
+// groups, or "" when no mapping is configured or no group matches.
+func (p *OrganizationOIDCProvider) ResolveRole(groups []string) string {
+	mappings := p.GroupRoleMappings.Data()
+	if len(mappings) == 0 {
+		return ""
+	}
+	best, bestRank := "", 0
+	for _, g := range groups {
+		if role, ok := mappings[g]; ok {
+			if r := orgRoleRank(role); r > bestRank {
+				best, bestRank = role, r
+			}
+		}
+	}
+	return best
+}
+
+// HasGroupFeatures reports whether the provider uses the OIDC groups claim (to
+// gate access or map roles), in which case the groups scope must be requested.
+func (p *OrganizationOIDCProvider) HasGroupFeatures() bool {
+	return len(p.AllowedGroups) > 0 || len(p.GroupRoleMappings.Data()) > 0
+}
+
+func orgRoleRank(role string) int {
+	switch role {
+	case RoleOrgOwner:
+		return 3
+	case RoleOrgAdmin:
+		return 2
+	case RoleOrgViewer:
+		return 1
+	default:
+		return 0
+	}
 }
 
 // SetClientSecret encrypts and stores the client secret. The provider ID must be
@@ -243,6 +318,18 @@ func ExistsEnabledOIDCProvider() (bool, error) {
 		return false, err
 	}
 	return count > 0, nil
+}
+
+// normalizeStrings trims whitespace and drops empty entries (case preserved).
+func normalizeStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, v := range values {
+		v = strings.TrimSpace(v)
+		if v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
 }
 
 func normalizeDomains(domains []string) []string {

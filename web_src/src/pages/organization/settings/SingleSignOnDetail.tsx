@@ -7,10 +7,11 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/ui/switch";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { usePermissions } from "@/contexts/usePermissions";
 import { getApiErrorMessage } from "@/lib/errors";
 import { showErrorToast, showSuccessToast } from "@/lib/toast";
-import { KeyRound, Copy, ArrowLeft } from "lucide-react";
+import { KeyRound, Copy, ArrowLeft, Plus, X } from "lucide-react";
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { useOidcProvider, useUpdateOidcProvider, useDeleteOidcProvider } from "@/hooks/useOidcProviders";
@@ -30,6 +31,39 @@ const buildCallbackUrl = (organizationId: string, slug: string): string =>
   `${window.location.origin}/auth/sso/${organizationId}/${slug || "<slug>"}/callback`;
 
 const formatList = (items: string[] | undefined): string => (items && items.length > 0 ? items.join(", ") : "—");
+
+const ROLE_OPTIONS = [
+  { label: "Admin", value: "org_admin" },
+  { label: "Viewer", value: "org_viewer" },
+] as const;
+
+const DEFAULT_ROLE = "org_viewer";
+
+interface GroupRoleRow {
+  group: string;
+  role: string;
+}
+
+const mappingToRows = (mapping: { [group: string]: string } | undefined): GroupRoleRow[] =>
+  Object.entries(mapping || {}).map(([group, role]) => ({ group, role }));
+
+const rowsToMapping = (rows: GroupRoleRow[]): { [group: string]: string } => {
+  const mapping: { [group: string]: string } = {};
+  for (const row of rows) {
+    const group = row.group.trim();
+    if (group.length > 0) {
+      mapping[group] = row.role;
+    }
+  }
+  return mapping;
+};
+
+const formatMapping = (mapping: { [group: string]: string } | undefined): string => {
+  const entries = Object.entries(mapping || {});
+  if (entries.length === 0) return "—";
+  const roleLabel = (role: string) => ROLE_OPTIONS.find((option) => option.value === role)?.label || role;
+  return entries.map(([group, role]) => `${group} → ${roleLabel(role)}`).join(", ");
+};
 
 const validateEditForm = (displayName: string, issuerUrl: string, clientId: string): string | null => {
   if (!displayName.trim()) return "Display name is required";
@@ -58,6 +92,8 @@ export function SingleSignOnDetail({ organizationId }: SingleSignOnDetailProps) 
   const [editClientSecret, setEditClientSecret] = useState("");
   const [editScopes, setEditScopes] = useState("");
   const [editAllowedEmailDomains, setEditAllowedEmailDomains] = useState("");
+  const [editAllowedGroups, setEditAllowedGroups] = useState("");
+  const [editGroupRoleRows, setEditGroupRoleRows] = useState<GroupRoleRow[]>([]);
   const [editEnabled, setEditEnabled] = useState(true);
 
   const handleEditStart = () => {
@@ -67,8 +103,22 @@ export function SingleSignOnDetail({ organizationId }: SingleSignOnDetailProps) 
     setEditClientSecret("");
     setEditScopes((provider?.scopes || []).join(", "));
     setEditAllowedEmailDomains((provider?.allowedEmailDomains || []).join(", "));
+    setEditAllowedGroups((provider?.allowedGroups || []).join(", "));
+    setEditGroupRoleRows(mappingToRows(provider?.groupRoleMappings));
     setEditEnabled(provider?.enabled ?? true);
     setIsEditing(true);
+  };
+
+  const handleAddGroupRoleRow = () => {
+    setEditGroupRoleRows((rows) => [...rows, { group: "", role: DEFAULT_ROLE }]);
+  };
+
+  const handleRemoveGroupRoleRow = (index: number) => {
+    setEditGroupRoleRows((rows) => rows.filter((_, i) => i !== index));
+  };
+
+  const handleGroupRoleRowChange = (index: number, updates: Partial<GroupRoleRow>) => {
+    setEditGroupRoleRows((rows) => rows.map((row, i) => (i === index ? { ...row, ...updates } : row)));
   };
 
   const handleEditCancel = () => {
@@ -91,6 +141,8 @@ export function SingleSignOnDetail({ organizationId }: SingleSignOnDetailProps) 
         clientSecret: editClientSecret,
         scopes: parseList(editScopes),
         allowedEmailDomains: parseList(editAllowedEmailDomains),
+        allowedGroups: parseList(editAllowedGroups),
+        groupRoleMappings: rowsToMapping(editGroupRoleRows),
         enabled: editEnabled,
       });
       showSuccessToast("Provider updated");
@@ -296,6 +348,78 @@ export function SingleSignOnDetail({ organizationId }: SingleSignOnDetailProps) 
                   page.
                 </p>
               </div>
+              <div>
+                <Label className="text-gray-800 dark:text-gray-100 mb-2">Allowed Groups</Label>
+                <Input
+                  type="text"
+                  value={editAllowedGroups}
+                  onChange={(e) => setEditAllowedGroups(e.target.value)}
+                  placeholder="e.g., engineering, platform"
+                  data-testid="sso-detail-edit-allowed-groups"
+                />
+                <p className="mt-1 text-xs text-gray-500">
+                  If set, only users who are a member of at least one of these IdP groups may sign in. Leave empty to
+                  allow any user (subject to allowed domains). Requires your IdP to emit a <code>groups</code> claim.
+                </p>
+              </div>
+              <div>
+                <Label className="text-gray-800 dark:text-gray-100 mb-2">Group → Role mapping</Label>
+                <div className="space-y-2" data-testid="sso-detail-edit-group-role-mappings">
+                  {editGroupRoleRows.map((row, index) => (
+                    <div key={index} className="flex items-center gap-2">
+                      <Input
+                        type="text"
+                        value={row.group}
+                        onChange={(e) => handleGroupRoleRowChange(index, { group: e.target.value })}
+                        placeholder="IdP group name"
+                        className="flex-1"
+                        data-testid={`sso-detail-edit-group-role-group-${index}`}
+                      />
+                      <Select
+                        value={row.role}
+                        onValueChange={(value) => handleGroupRoleRowChange(index, { role: value })}
+                      >
+                        <SelectTrigger className="w-32" data-testid={`sso-detail-edit-group-role-role-${index}`}>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {ROLE_OPTIONS.map((option) => (
+                            <SelectItem key={option.value} value={option.value}>
+                              {option.label}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => handleRemoveGroupRoleRow(index)}
+                        className="text-gray-500 hover:text-gray-800"
+                        aria-label="Remove mapping"
+                        data-testid={`sso-detail-edit-group-role-remove-${index}`}
+                      >
+                        <X className="w-4 h-4" />
+                      </Button>
+                    </div>
+                  ))}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleAddGroupRoleRow}
+                    className="flex items-center gap-1"
+                    data-testid="sso-detail-edit-group-role-add"
+                  >
+                    <Plus className="w-4 h-4" />
+                    Add mapping
+                  </Button>
+                </div>
+                <p className="mt-1 text-xs text-gray-500">
+                  Users in a mapped group are granted that role on every login — the IdP is authoritative and overrides
+                  manual role changes. Unmapped users get Viewer. An organization Owner is never demoted by this.
+                </p>
+              </div>
               <div className="flex items-center gap-3">
                 <Switch checked={editEnabled} onCheckedChange={setEditEnabled} data-testid="sso-detail-edit-enabled" />
                 <Label className="text-gray-800 dark:text-gray-100">Enabled</Label>
@@ -337,6 +461,10 @@ export function SingleSignOnDetail({ organizationId }: SingleSignOnDetailProps) 
               <dd className="text-gray-800 dark:text-white">{formatList(provider.scopes)}</dd>
               <dt className="text-gray-500 dark:text-gray-400">Allowed Email Domains</dt>
               <dd className="text-gray-800 dark:text-white">{formatList(provider.allowedEmailDomains)}</dd>
+              <dt className="text-gray-500 dark:text-gray-400">Allowed Groups</dt>
+              <dd className="text-gray-800 dark:text-white">{formatList(provider.allowedGroups)}</dd>
+              <dt className="text-gray-500 dark:text-gray-400">Group → Role mapping</dt>
+              <dd className="text-gray-800 dark:text-white break-words">{formatMapping(provider.groupRoleMappings)}</dd>
               <dt className="text-gray-500 dark:text-gray-400">Created at</dt>
               <dd className="text-gray-800 dark:text-white">{createdAt}</dd>
               <dt className="text-gray-500 dark:text-gray-400">ID</dt>

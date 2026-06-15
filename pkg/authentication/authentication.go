@@ -82,6 +82,19 @@ func (a *Handler) PasswordLoginEnabled() bool {
 	return a.passwordLoginEnabled
 }
 
+// effectivePasswordLoginEnabled reports whether email/password login is currently
+// usable: the ENABLE_PASSWORD_LOGIN env must allow it AND an installation admin
+// must not have disabled it at runtime via installation settings.
+func (a *Handler) effectivePasswordLoginEnabled() bool {
+	if !a.passwordLoginEnabled {
+		return false
+	}
+	if meta, err := models.GetInstallationMetadata(); err == nil && meta.PasswordLoginDisabled {
+		return false
+	}
+	return true
+}
+
 func (a *Handler) InitializeProviders(providers map[string]ProviderConfig) {
 	var gothProviders []goth.Provider
 
@@ -337,7 +350,7 @@ func (a *Handler) handleAuthConfig(w http.ResponseWriter, r *http.Request) {
 		SSOEnabled           bool     `json:"ssoEnabled"`
 	}{
 		Providers:            providerNames,
-		PasswordLoginEnabled: a.passwordLoginEnabled,
+		PasswordLoginEnabled: a.effectivePasswordLoginEnabled(),
 		SignupEnabled:        !a.blockSignup,
 		MagicCodeEnabled:     a.magicCodeEnabled,
 		SSOEnabled:           ssoEnabled,
@@ -351,7 +364,7 @@ func (a *Handler) handleAuthConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Handler) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
-	if !a.passwordLoginEnabled {
+	if !a.effectivePasswordLoginEnabled() {
 		http.Error(w, "Password login is not enabled", http.StatusForbidden)
 		return
 	}
@@ -414,7 +427,7 @@ func (a *Handler) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Handler) handlePasswordSignup(w http.ResponseWriter, r *http.Request) {
-	if !a.passwordLoginEnabled {
+	if !a.effectivePasswordLoginEnabled() {
 		http.Error(w, "Password login is not enabled", http.StatusForbidden)
 		return
 	}

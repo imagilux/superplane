@@ -35,6 +35,7 @@ type paginatedResponse struct {
 
 type installationSettingsResponse struct {
 	AllowPrivateNetworkAccess  bool     `json:"allow_private_network_access"`
+	PasswordLoginDisabled      bool     `json:"password_login_disabled"`
 	EffectiveBlockedHTTPHosts  []string `json:"effective_blocked_http_hosts"`
 	EffectivePrivateIPRanges   []string `json:"effective_private_ip_ranges"`
 	BlockedHTTPHostsOverridden bool     `json:"blocked_http_hosts_overridden"`
@@ -51,6 +52,7 @@ type installationSettingsResponse struct {
 
 type installationSettingsRequest struct {
 	AllowPrivateNetworkAccess *bool   `json:"allow_private_network_access"`
+	PasswordLoginDisabled     *bool   `json:"password_login_disabled"`
 	SMTPEnabled               *bool   `json:"smtp_enabled"`
 	SMTPHost                  *string `json:"smtp_host"`
 	SMTPPort                  *int    `json:"smtp_port"`
@@ -132,13 +134,18 @@ var errInvalidInstallationSettingsRequest = errors.New("invalid installation set
 
 func (s *Server) updateInstallationSettings(ctx context.Context, req installationSettingsRequest) error {
 	return database.Conn().Transaction(func(tx *gorm.DB) error {
-		if req.AllowPrivateNetworkAccess != nil {
+		if req.AllowPrivateNetworkAccess != nil || req.PasswordLoginDisabled != nil {
 			metadata, err := models.GetInstallationMetadataInTransaction(tx)
 			if err != nil {
 				return err
 			}
 
-			metadata.AllowPrivateNetworkAccess = *req.AllowPrivateNetworkAccess
+			if req.AllowPrivateNetworkAccess != nil {
+				metadata.AllowPrivateNetworkAccess = *req.AllowPrivateNetworkAccess
+			}
+			if req.PasswordLoginDisabled != nil {
+				metadata.PasswordLoginDisabled = *req.PasswordLoginDisabled
+			}
 			metadata.UpdatedAt = time.Now()
 
 			if err := models.UpdateInstallationMetadataInTransaction(tx, metadata); err != nil {
@@ -160,8 +167,14 @@ func (s *Server) buildInstallationSettingsResponse() (installationSettingsRespon
 		return installationSettingsResponse{}, err
 	}
 
+	metadata, err := models.GetInstallationMetadata()
+	if err != nil {
+		return installationSettingsResponse{}, err
+	}
+
 	response := installationSettingsResponse{
 		AllowPrivateNetworkAccess:  policy.AllowPrivateNetworkAccess,
+		PasswordLoginDisabled:      metadata.PasswordLoginDisabled,
 		EffectiveBlockedHTTPHosts:  policy.BlockedHosts,
 		EffectivePrivateIPRanges:   policy.PrivateIPRanges,
 		BlockedHTTPHostsOverridden: policy.BlockedHostsOverridden,

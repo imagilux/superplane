@@ -16,6 +16,7 @@ type InstallationMetadata struct {
 	ID                        int    `gorm:"primary_key"`
 	InstallationID            string `gorm:"type:varchar(64)"`
 	AllowPrivateNetworkAccess bool
+	PasswordLoginDisabled     bool
 	CreatedAt                 time.Time
 	UpdatedAt                 time.Time
 }
@@ -54,6 +55,7 @@ func UpdateInstallationMetadataInTransaction(tx *gorm.DB, metadata *Installation
 		Where("id = ?", installationMetadataID).
 		Updates(map[string]any{
 			"allow_private_network_access": metadata.AllowPrivateNetworkAccess,
+			"password_login_disabled":      metadata.PasswordLoginDisabled,
 			"updated_at":                   metadata.UpdatedAt,
 		}).
 		Error

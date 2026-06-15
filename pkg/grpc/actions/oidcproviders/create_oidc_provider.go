@@ -46,6 +46,10 @@ func CreateOIDCProvider(ctx context.Context, req *pb.CreateOIDCProviderRequest, 
 		return nil, status.Error(codes.InvalidArgument, "client_secret is required")
 	}
 
+	if err := validateGroupRoleMappings(req.GroupRoleMappings); err != nil {
+		return nil, err
+	}
+
 	orgUUID, err := uuid.Parse(orgID)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, "invalid organization ID")
@@ -57,6 +61,8 @@ func CreateOIDCProvider(ctx context.Context, req *pb.CreateOIDCProviderRequest, 
 	}
 
 	provider := models.NewOIDCProvider(orgUUID, &createdByUUID, req.Slug, req.DisplayName, providerType, req.IssuerUrl, req.ClientId, req.Scopes, req.AllowedEmailDomains, req.Enabled)
+	provider.SetAllowedGroups(req.AllowedGroups)
+	provider.SetGroupRoleMappings(req.GroupRoleMappings)
 	if err := provider.SetClientSecret(ctx, encryptor, req.ClientSecret); err != nil {
 		return nil, status.Error(codes.Internal, "failed to encrypt client secret")
 	}
