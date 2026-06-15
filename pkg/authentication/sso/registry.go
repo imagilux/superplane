@@ -49,7 +49,7 @@ func NewRegistry(ttl time.Duration) *Registry {
 	return &Registry{
 		entries:    make(map[string]*entry),
 		ttl:        ttl,
-		httpClient: &http.Client{Timeout: 10 * time.Second},
+		httpClient: NewGuardedHTTPClient(10 * time.Second),
 	}
 }
 

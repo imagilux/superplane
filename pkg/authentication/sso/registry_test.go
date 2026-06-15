@@ -1,4 +1,4 @@
-package sso
+package sso_test
 
 import (
 	"context"
@@ -7,14 +7,15 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/superplanehq/superplane/pkg/authentication/sso"
 	"github.com/superplanehq/superplane/test/support"
 )
 
 func TestRegistryDiscovery(t *testing.T) {
 	mock := support.NewMockOIDCProvider(t, "client-1")
-	reg := NewRegistry(time.Minute)
+	reg := sso.NewRegistry(time.Minute)
 
-	cfg := Config{
+	cfg := sso.Config{
 		ID:           "p1",
 		IssuerURL:    mock.Issuer,
 		ClientID:     "client-1",
@@ -36,9 +37,9 @@ func TestRegistryDiscovery(t *testing.T) {
 
 func TestRegistryUnreachableIssuerErrorsAndIsNotCached(t *testing.T) {
 	mock := support.NewMockOIDCProvider(t, "client-1")
-	reg := NewRegistry(time.Minute)
+	reg := sso.NewRegistry(time.Minute)
 
-	bad := Config{ID: "p2", IssuerURL: mock.Issuer + "/no-such-issuer", ClientID: "c", RedirectURL: "http://localhost/cb"}
+	bad := sso.Config{ID: "p2", IssuerURL: mock.Issuer + "/no-such-issuer", ClientID: "c", RedirectURL: "http://localhost/cb"}
 	_, _, err := reg.Get(context.Background(), bad)
 	assert.Error(t, err, "discovery against a non-OIDC URL must fail")
 
