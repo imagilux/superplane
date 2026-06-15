@@ -21,6 +21,7 @@ import (
 	"github.com/markbates/goth/providers/github"
 	"github.com/markbates/goth/providers/google"
 	log "github.com/sirupsen/logrus"
+	"github.com/superplanehq/superplane/pkg/authentication/sso"
 	"github.com/superplanehq/superplane/pkg/authorization"
 	"github.com/superplanehq/superplane/pkg/crypto"
 	"github.com/superplanehq/superplane/pkg/database"
@@ -50,6 +51,7 @@ type Handler struct {
 	blockSignup          bool
 	passwordLoginEnabled bool
 	magicCodeEnabled     bool
+	ssoRegistry          *sso.Registry
 }
 
 type ProviderConfig struct {
@@ -68,6 +70,7 @@ func NewHandler(jwtSigner *jwt.Signer, encryptor crypto.Encryptor, authService a
 		blockSignup:          blockSignup,
 		passwordLoginEnabled: passwordLoginEnabled,
 		magicCodeEnabled:     magicCodeEnabled,
+		ssoRegistry:          sso.NewRegistry(ssoDiscoveryTTL()),
 	}
 }
 
@@ -119,6 +122,14 @@ func (a *Handler) RegisterRoutes(router *mux.Router) {
 		router.HandleFunc("/auth/magic-code/verify", a.handleMagicCodeVerify).Methods("POST")
 		router.HandleFunc("/auth/magic-code/verify", a.handleMagicLinkRedirect).Methods("GET")
 	}
+
+	//
+	// Per-organization OIDC SSO routes, registered for both dev and prod and
+	// before the /auth/{provider} catch-all below (they have distinct, longer
+	// path shapes, so they never collide with it).
+	//
+	router.HandleFunc("/auth/sso/{orgId}/{providerSlug}/callback", a.handleSSOCallback).Methods("GET")
+	router.HandleFunc("/auth/sso/{orgId}/{providerSlug}", a.handleSSOLogin).Methods("GET")
 
 	//
 	// If we are running the application locally,
@@ -312,16 +323,23 @@ func (a *Handler) handleAuthConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Strings(providerNames)
 
+	ssoEnabled := false
+	if enabled, err := models.ExistsEnabledOIDCProvider(); err == nil {
+		ssoEnabled = enabled
+	}
+
 	response := struct {
 		Providers            []string `json:"providers"`
 		PasswordLoginEnabled bool     `json:"passwordLoginEnabled"`
 		SignupEnabled        bool     `json:"signupEnabled"`
 		MagicCodeEnabled     bool     `json:"magicCodeEnabled"`
+		SSOEnabled           bool     `json:"ssoEnabled"`
 	}{
 		Providers:            providerNames,
 		PasswordLoginEnabled: a.passwordLoginEnabled,
 		SignupEnabled:        !a.blockSignup,
 		MagicCodeEnabled:     a.magicCodeEnabled,
+		SSOEnabled:           ssoEnabled,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

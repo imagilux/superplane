@@ -230,6 +230,21 @@ func FindEnabledOIDCProvidersByEmailDomain(domain string) ([]OrganizationOIDCPro
 	return providers, nil
 }
 
+// ExistsEnabledOIDCProvider reports whether any organization has an enabled OIDC
+// provider. Used to decide whether to surface SSO on the login screen.
+func ExistsEnabledOIDCProvider() (bool, error) {
+	var count int64
+	err := database.Conn().
+		Model(&OrganizationOIDCProvider{}).
+		Where("enabled = ?", true).
+		Count(&count).
+		Error
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
 func normalizeDomains(domains []string) []string {
 	out := make([]string, 0, len(domains))
 	for _, d := range domains {
