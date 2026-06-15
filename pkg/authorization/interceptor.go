@@ -17,6 +17,7 @@ import (
 	pbCanvases "github.com/superplanehq/superplane/pkg/protos/canvases"
 	pbGroups "github.com/superplanehq/superplane/pkg/protos/groups"
 	pbIntegrations "github.com/superplanehq/superplane/pkg/protos/integrations"
+	pbOIDCProviders "github.com/superplanehq/superplane/pkg/protos/oidc_providers"
 	pbOrganization "github.com/superplanehq/superplane/pkg/protos/organizations"
 	pbRoles "github.com/superplanehq/superplane/pkg/protos/roles"
 	pbSecrets "github.com/superplanehq/superplane/pkg/protos/secrets"
@@ -456,6 +457,13 @@ func DefaultAuthorizationRules() map[string]AuthorizationRule {
 		pbServiceAccounts.ServiceAccounts_UpdateServiceAccount_FullMethodName:          {Resource: "service_accounts", Action: "update", DomainType: models.DomainTypeOrganization},
 		pbServiceAccounts.ServiceAccounts_DeleteServiceAccount_FullMethodName:          {Resource: "service_accounts", Action: "delete", DomainType: models.DomainTypeOrganization},
 		pbServiceAccounts.ServiceAccounts_RegenerateServiceAccountToken_FullMethodName: {Resource: "service_accounts", Action: "update", DomainType: models.DomainTypeOrganization},
+
+		// OIDC Providers rules
+		pbOIDCProviders.OIDCProviders_CreateOIDCProvider_FullMethodName:   {Resource: "oidc_providers", Action: "create", DomainType: models.DomainTypeOrganization},
+		pbOIDCProviders.OIDCProviders_ListOIDCProviders_FullMethodName:    {Resource: "oidc_providers", Action: "read", DomainType: models.DomainTypeOrganization},
+		pbOIDCProviders.OIDCProviders_DescribeOIDCProvider_FullMethodName: {Resource: "oidc_providers", Action: "read", DomainType: models.DomainTypeOrganization},
+		pbOIDCProviders.OIDCProviders_UpdateOIDCProvider_FullMethodName:   {Resource: "oidc_providers", Action: "update", DomainType: models.DomainTypeOrganization},
+		pbOIDCProviders.OIDCProviders_DeleteOIDCProvider_FullMethodName:   {Resource: "oidc_providers", Action: "delete", DomainType: models.DomainTypeOrganization},
 	}
 
 	return rules

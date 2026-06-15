@@ -1,0 +1,157 @@
+syntax = "proto3";
+
+package Superplane.OIDCProviders;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+option go_package = "github.com/superplanehq/superplane/pkg/protos/oidc_providers";
+
+option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_swagger) = {
+  info: {
+    title: "Superplane OIDC Providers API";
+    version: "1.0";
+    description: "API for managing per-organization OIDC SSO providers";
+    contact: {
+      name: "API Support";
+      email: "support@superplane.com";
+    };
+  };
+  schemes: HTTPS;
+  schemes: HTTP;
+  consumes: "application/json";
+  produces: "application/json";
+};
+
+service OIDCProviders {
+  rpc CreateOIDCProvider(CreateOIDCProviderRequest) returns (CreateOIDCProviderResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/oidc-providers"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Create an OIDC provider";
+      description: "Creates a new OIDC SSO provider in the organization";
+      tags: "OIDCProviders";
+    };
+  }
+
+  rpc ListOIDCProviders(ListOIDCProvidersRequest) returns (ListOIDCProvidersResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/oidc-providers"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List OIDC providers";
+      description: "Returns all OIDC SSO providers in the organization";
+      tags: "OIDCProviders";
+    };
+  }
+
+  rpc DescribeOIDCProvider(DescribeOIDCProviderRequest) returns (DescribeOIDCProviderResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/oidc-providers/{id}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Describe an OIDC provider";
+      description: "Returns details of a specific OIDC SSO provider";
+      tags: "OIDCProviders";
+    };
+  }
+
+  rpc UpdateOIDCProvider(UpdateOIDCProviderRequest) returns (UpdateOIDCProviderResponse) {
+    option (google.api.http) = {
+      patch: "/api/v1/oidc-providers/{id}"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Update an OIDC provider";
+      description: "Updates an OIDC SSO provider. The client secret is write-only; omit it to keep the existing value.";
+      tags: "OIDCProviders";
+    };
+  }
+
+  rpc DeleteOIDCProvider(DeleteOIDCProviderRequest) returns (DeleteOIDCProviderResponse) {
+    option (google.api.http) = {
+      delete: "/api/v1/oidc-providers/{id}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Delete an OIDC provider";
+      description: "Deletes an OIDC SSO provider";
+      tags: "OIDCProviders";
+    };
+  }
+}
+
+// OIDCProvider is the API representation of a per-organization OIDC SSO provider.
+// The client secret is never returned; has_client_secret reports whether one is set.
+message OIDCProvider {
+  string id = 1;
+  string slug = 2;
+  string display_name = 3;
+  string type = 4;
+  string issuer_url = 5;
+  string client_id = 6;
+  bool has_client_secret = 7;
+  repeated string scopes = 8;
+  repeated string allowed_email_domains = 9;
+  bool enabled = 10;
+  string organization_id = 11;
+  string created_by = 12;
+  google.protobuf.Timestamp created_at = 13;
+  google.protobuf.Timestamp updated_at = 14;
+}
+
+message CreateOIDCProviderRequest {
+  string slug = 1;
+  string display_name = 2;
+  string type = 3;
+  string issuer_url = 4;
+  string client_id = 5;
+  string client_secret = 6;
+  repeated string scopes = 7;
+  repeated string allowed_email_domains = 8;
+  bool enabled = 9;
+}
+
+message CreateOIDCProviderResponse {
+  OIDCProvider provider = 1;
+}
+
+message ListOIDCProvidersRequest {}
+
+message ListOIDCProvidersResponse {
+  repeated OIDCProvider providers = 1;
+}
+
+message DescribeOIDCProviderRequest {
+  string id = 1;
+}
+
+message DescribeOIDCProviderResponse {
+  OIDCProvider provider = 1;
+}
+
+// UpdateOIDCProviderRequest carries the full desired state of the editable fields.
+// slug and type are immutable. client_secret is write-only: empty means keep the
+// existing secret.
+message UpdateOIDCProviderRequest {
+  string id = 1;
+  string display_name = 2;
+  string issuer_url = 3;
+  string client_id = 4;
+  string client_secret = 5;
+  repeated string scopes = 6;
+  repeated string allowed_email_domains = 7;
+  bool enabled = 8;
+}
+
+message UpdateOIDCProviderResponse {
+  OIDCProvider provider = 1;
+}
+
+message DeleteOIDCProviderRequest {
+  string id = 1;
+}
+
+message DeleteOIDCProviderResponse {}

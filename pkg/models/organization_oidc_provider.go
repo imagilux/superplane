@@ -54,26 +54,36 @@ func NewOIDCProvider(orgID uuid.UUID, createdBy *uuid.UUID, slug, displayName, p
 	if providerType == "" {
 		providerType = OIDCProviderTypeOIDC
 	}
+
+	p := &OrganizationOIDCProvider{
+		ID:             uuid.New(),
+		OrganizationID: orgID,
+		Slug:           slug,
+		DisplayName:    displayName,
+		Type:           providerType,
+		IssuerURL:      issuerURL,
+		ClientID:       clientID,
+		Enabled:        enabled,
+		CreatedBy:      createdBy,
+	}
+	p.SetScopes(scopes)
+	p.SetAllowedEmailDomains(allowedDomains)
+	return p
+}
+
+// SetScopes sets the requested scopes, falling back to DefaultOIDCScopes when none
+// are provided (an OIDC flow always needs at least "openid").
+func (p *OrganizationOIDCProvider) SetScopes(scopes []string) {
 	if len(scopes) == 0 {
 		scopes = append([]string{}, DefaultOIDCScopes...)
 	}
-	if allowedDomains == nil {
-		allowedDomains = []string{}
-	}
+	p.Scopes = datatypes.JSONSlice[string](scopes)
+}
 
-	return &OrganizationOIDCProvider{
-		ID:                  uuid.New(),
-		OrganizationID:      orgID,
-		Slug:                slug,
-		DisplayName:         displayName,
-		Type:                providerType,
-		IssuerURL:           issuerURL,
-		ClientID:            clientID,
-		Scopes:              datatypes.JSONSlice[string](scopes),
-		AllowedEmailDomains: datatypes.JSONSlice[string](normalizeDomains(allowedDomains)),
-		Enabled:             enabled,
-		CreatedBy:           createdBy,
-	}
+// SetAllowedEmailDomains normalizes (lower-cases, trims, drops empties) and stores
+// the allowed email domains. An empty result means no domain restriction.
+func (p *OrganizationOIDCProvider) SetAllowedEmailDomains(domains []string) {
+	p.AllowedEmailDomains = datatypes.JSONSlice[string](normalizeDomains(domains))
 }
 
 // SetClientSecret encrypts and stores the client secret. The provider ID must be
