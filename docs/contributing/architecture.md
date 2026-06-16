@@ -52,7 +52,9 @@ SuperPlane uses a multi-layered security model to authenticate users and enforce
 
 - **JWT Tokens**: Users authenticate via JWT tokens stored in cookies (for web UI) or Bearer tokens (for API access)
 - **User API Tokens**: Long-lived tokens for programmatic API access
-- **OIDC Support**: Optional OIDC authentication for external identity providers
+- **Per-organization OIDC SSO**: Generic OIDC providers configured per organization at runtime — a dynamic discovery/verifier engine with group gating and group→role mapping. See [SSO architecture](sso-architecture.md).
+- **Account deactivation**: A reversible disabled state (`accounts.deactivated_at`) enforced on every authentication path (session, password, SSO, magic-code, API token).
+- **Disable password login**: An installation-wide toggle (with a self-lockout guard) to require SSO-only sign-in. See [Identity & accounts](../identity-and-accounts.md).
 
 **Authorization:**
 
