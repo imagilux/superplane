@@ -63,6 +63,7 @@ func CreateOIDCProvider(ctx context.Context, req *pb.CreateOIDCProviderRequest, 
 	provider := models.NewOIDCProvider(orgUUID, &createdByUUID, req.Slug, req.DisplayName, providerType, req.IssuerUrl, req.ClientId, req.Scopes, req.AllowedEmailDomains, req.Enabled)
 	provider.SetAllowedGroups(req.AllowedGroups)
 	provider.SetGroupRoleMappings(req.GroupRoleMappings)
+	provider.SetGroupsClaim(req.GroupsClaim)
 	if err := provider.SetClientSecret(ctx, encryptor, req.ClientSecret); err != nil {
 		return nil, status.Error(codes.Internal, "failed to encrypt client secret")
 	}

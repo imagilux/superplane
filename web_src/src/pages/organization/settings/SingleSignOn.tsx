@@ -92,6 +92,7 @@ export function SingleSignOn({ organizationId }: SingleSignOnProps) {
   const [allowedEmailDomains, setAllowedEmailDomains] = useState("");
   const [allowedGroups, setAllowedGroups] = useState("");
   const [groupRoleRows, setGroupRoleRows] = useState<GroupRoleRow[]>([]);
+  const [groupsClaim, setGroupsClaim] = useState("");
   const [enabled, setEnabled] = useState(true);
   const canCreate = canAct("oidc_providers", "create");
   const canDelete = canAct("oidc_providers", "delete");
@@ -111,6 +112,7 @@ export function SingleSignOn({ organizationId }: SingleSignOnProps) {
     setAllowedEmailDomains("");
     setAllowedGroups("");
     setGroupRoleRows([]);
+    setGroupsClaim("");
     setEnabled(true);
   };
 
@@ -156,6 +158,7 @@ export function SingleSignOn({ organizationId }: SingleSignOnProps) {
         scopes: parseList(scopes),
         allowedEmailDomains: parseList(allowedEmailDomains),
         allowedGroups: parseList(allowedGroups),
+        groupsClaim: groupsClaim.trim(),
         groupRoleMappings: rowsToMapping(groupRoleRows),
         enabled,
       });
@@ -533,6 +536,21 @@ export function SingleSignOn({ organizationId }: SingleSignOnProps) {
                     Users in a mapped group are granted that role on every login — the IdP is authoritative and
                     overrides manual role changes. Unmapped users get Viewer. An organization Owner is never demoted by
                     this.
+                  </p>
+                </div>
+                <div>
+                  <Label className="text-gray-800 dark:text-gray-100 mb-2">Groups claim</Label>
+                  <Input
+                    type="text"
+                    value={groupsClaim}
+                    onChange={(e) => setGroupsClaim(e.target.value)}
+                    placeholder="groups"
+                    data-testid="sso-create-groups-claim"
+                  />
+                  <p className="mt-1 text-xs text-gray-500">
+                    The ID-token claim to read group membership from. Defaults to <code>groups</code>. Set this for IdPs
+                    such as Okta or Entra ID that emit groups under a different claim name — and request the matching
+                    scope yourself in Scopes.
                   </p>
                 </div>
                 <div className="flex items-center gap-3">

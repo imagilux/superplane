@@ -249,3 +249,33 @@ func TestSSOFlow_RoleMappingAndResync(t *testing.T) {
 		assert.False(t, hasRole(roles, models.RoleOrgAdmin), "admin grant must be removed on downgrade")
 	})
 }
+
+func TestSSOFlow_CustomGroupsClaim(t *testing.T) {
+	h, r, mock, orgID, _, _ := setupSSO(t)
+	ctx := context.Background()
+
+	// Provider reads groups from a non-default "roles" claim and maps one to admin.
+	p := models.NewOIDCProvider(r.Organization.ID, nil, "okta", "Okta", "", mock.Issuer, "test-client", nil, nil, true)
+	p.SetGroupsClaim("roles")
+	p.SetGroupRoleMappings(map[string]string{"admins": models.RoleOrgAdmin})
+	require.NoError(t, p.SetClientSecret(ctx, r.Encryptor, "test-secret"))
+	require.NoError(t, p.Create())
+
+	state, nonce, cookie := doSSOLogin(t, h, orgID, "okta", "")
+	mock.RegisterCode("okta-1", support.MockIDClaims{
+		Sub: "sub-o", Email: "o@example.com", Nonce: nonce, EmailVerified: true,
+		Groups:      []string{"not-mapped"}, // the default "groups" claim must be ignored
+		ExtraClaims: map[string]any{"roles": []string{"admins"}},
+	})
+	rec := doSSOCallback(h, orgID, "okta", "okta-1", state, cookie)
+	require.Equal(t, http.StatusTemporaryRedirect, rec.Code)
+	require.NotContains(t, rec.Header().Get("Location"), "sso_error")
+
+	// The role must come from the custom "roles" claim (admin), not the default
+	// "groups" claim (which holds an unmapped value, i.e. would be viewer).
+	user, err := models.FindActiveUserByEmail(orgID, "o@example.com")
+	require.NoError(t, err)
+	roles, err := r.AuthService.GetUserRolesForOrg(ctx, user.ID.String(), orgID)
+	require.NoError(t, err)
+	assert.True(t, hasRole(roles, models.RoleOrgAdmin), "role should resolve from the custom 'roles' claim")
+}

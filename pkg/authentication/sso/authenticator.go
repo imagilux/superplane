@@ -97,31 +97,66 @@ func (a *oidcAuthenticator) Complete(ctx context.Context, code, nonce string) (*
 		return nil, ErrNonceMismatch
 	}
 
-	var claims struct {
-		Email             string   `json:"email"`
-		EmailVerified     bool     `json:"email_verified"`
-		Name              string   `json:"name"`
-		PreferredUsername string   `json:"preferred_username"`
-		Picture           string   `json:"picture"`
-		Groups            []string `json:"groups"`
-	}
-	if err := idToken.Claims(&claims); err != nil {
+	var raw map[string]any
+	if err := idToken.Claims(&raw); err != nil {
 		return nil, fmt.Errorf("sso: failed to parse id token claims: %w", err)
 	}
-	if claims.Email == "" {
+
+	email := claimString(raw, "email")
+	if email == "" {
 		return nil, ErrMissingEmail
+	}
+
+	groupsClaim := a.config.GroupsClaim
+	if groupsClaim == "" {
+		groupsClaim = "groups"
 	}
 
 	return &AuthResult{
 		Subject:       idToken.Subject,
-		Email:         claims.Email,
-		EmailVerified: claims.EmailVerified,
-		Name:          claims.Name,
-		Username:      claims.PreferredUsername,
-		AvatarURL:     claims.Picture,
-		Groups:        claims.Groups,
+		Email:         email,
+		EmailVerified: claimBool(raw, "email_verified"),
+		Name:          claimString(raw, "name"),
+		Username:      claimString(raw, "preferred_username"),
+		AvatarURL:     claimString(raw, "picture"),
+		Groups:        claimStrings(raw, groupsClaim),
 		AccessToken:   oauthToken.AccessToken,
 		RefreshToken:  oauthToken.RefreshToken,
 		ExpiresAt:     oauthToken.Expiry,
 	}, nil
+}
+
+func claimString(m map[string]any, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func claimBool(m map[string]any, key string) bool {
+	if v, ok := m[key].(bool); ok {
+		return v
+	}
+	return false
+}
+
+// claimStrings reads a string-list claim, tolerating both a JSON array of
+// strings (the common case) and a single bare string (some IdPs emit one group
+// as a string rather than a one-element array).
+func claimStrings(m map[string]any, key string) []string {
+	switch v := m[key].(type) {
+	case []any:
+		out := make([]string, 0, len(v))
+		for _, e := range v {
+			if s, ok := e.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	case string:
+		if v != "" {
+			return []string{v}
+		}
+	}
+	return nil
 }

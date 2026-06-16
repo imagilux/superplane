@@ -39,6 +39,9 @@ type MockIDClaims struct {
 	Nonce         string
 	EmailVerified bool
 	Groups        []string
+	// ExtraClaims are merged into the ID token verbatim — for testing custom
+	// claim names (e.g. a non-default groups claim).
+	ExtraClaims map[string]any
 }
 
 // NewMockOIDCProvider starts a mock IdP and registers cleanup on the test.
@@ -136,7 +139,7 @@ func (m *MockOIDCProvider) handleToken(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
-	token := jwtLib.NewWithClaims(jwtLib.SigningMethodRS256, jwtLib.MapClaims{
+	mapClaims := jwtLib.MapClaims{
 		"iss":            m.Issuer,
 		"aud":            m.ClientID,
 		"sub":            claims.Sub,
@@ -147,7 +150,11 @@ func (m *MockOIDCProvider) handleToken(w http.ResponseWriter, r *http.Request) {
 		"email_verified": claims.EmailVerified,
 		"name":           claims.Name,
 		"groups":         claims.Groups,
-	})
+	}
+	for k, v := range claims.ExtraClaims {
+		mapClaims[k] = v
+	}
+	token := jwtLib.NewWithClaims(jwtLib.SigningMethodRS256, mapClaims)
 	token.Header["kid"] = m.kid
 	signed, err := token.SignedString(m.key)
 	if err != nil {

@@ -94,6 +94,7 @@ export function SingleSignOnDetail({ organizationId }: SingleSignOnDetailProps) 
   const [editAllowedEmailDomains, setEditAllowedEmailDomains] = useState("");
   const [editAllowedGroups, setEditAllowedGroups] = useState("");
   const [editGroupRoleRows, setEditGroupRoleRows] = useState<GroupRoleRow[]>([]);
+  const [editGroupsClaim, setEditGroupsClaim] = useState("");
   const [editEnabled, setEditEnabled] = useState(true);
 
   const handleEditStart = () => {
@@ -105,6 +106,7 @@ export function SingleSignOnDetail({ organizationId }: SingleSignOnDetailProps) 
     setEditAllowedEmailDomains((provider?.allowedEmailDomains || []).join(", "));
     setEditAllowedGroups((provider?.allowedGroups || []).join(", "));
     setEditGroupRoleRows(mappingToRows(provider?.groupRoleMappings));
+    setEditGroupsClaim(provider?.groupsClaim || "");
     setEditEnabled(provider?.enabled ?? true);
     setIsEditing(true);
   };
@@ -142,6 +144,7 @@ export function SingleSignOnDetail({ organizationId }: SingleSignOnDetailProps) 
         scopes: parseList(editScopes),
         allowedEmailDomains: parseList(editAllowedEmailDomains),
         allowedGroups: parseList(editAllowedGroups),
+        groupsClaim: editGroupsClaim.trim(),
         groupRoleMappings: rowsToMapping(editGroupRoleRows),
         enabled: editEnabled,
       });
@@ -420,6 +423,21 @@ export function SingleSignOnDetail({ organizationId }: SingleSignOnDetailProps) 
                   manual role changes. Unmapped users get Viewer. An organization Owner is never demoted by this.
                 </p>
               </div>
+              <div>
+                <Label className="text-gray-800 dark:text-gray-100 mb-2">Groups claim</Label>
+                <Input
+                  type="text"
+                  value={editGroupsClaim}
+                  onChange={(e) => setEditGroupsClaim(e.target.value)}
+                  placeholder="groups"
+                  data-testid="sso-detail-edit-groups-claim"
+                />
+                <p className="mt-1 text-xs text-gray-500">
+                  The ID-token claim to read group membership from. Defaults to <code>groups</code>. Set this for IdPs
+                  such as Okta or Entra ID that emit groups under a different claim name — and request the matching
+                  scope yourself in Scopes.
+                </p>
+              </div>
               <div className="flex items-center gap-3">
                 <Switch checked={editEnabled} onCheckedChange={setEditEnabled} data-testid="sso-detail-edit-enabled" />
                 <Label className="text-gray-800 dark:text-gray-100">Enabled</Label>
@@ -465,6 +483,8 @@ export function SingleSignOnDetail({ organizationId }: SingleSignOnDetailProps) 
               <dd className="text-gray-800 dark:text-white">{formatList(provider.allowedGroups)}</dd>
               <dt className="text-gray-500 dark:text-gray-400">Group → Role mapping</dt>
               <dd className="text-gray-800 dark:text-white break-words">{formatMapping(provider.groupRoleMappings)}</dd>
+              <dt className="text-gray-500 dark:text-gray-400">Groups claim</dt>
+              <dd className="text-gray-800 dark:text-white font-mono text-xs">{provider.groupsClaim || "groups"}</dd>
               <dt className="text-gray-500 dark:text-gray-400">Created at</dt>
               <dd className="text-gray-800 dark:text-white">{createdAt}</dd>
               <dt className="text-gray-500 dark:text-gray-400">ID</dt>

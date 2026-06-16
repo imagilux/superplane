@@ -25,6 +25,10 @@ type Config struct {
 	ClientSecret string
 	RedirectURL  string
 	Scopes       []string
+	// GroupsClaim is the ID-token claim that group membership is read from.
+	// Empty means the conventional "groups". It does not affect discovery, so
+	// it is deliberately excluded from the cache key.
+	GroupsClaim string
 }
 
 type entry struct {

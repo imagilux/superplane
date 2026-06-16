@@ -388,7 +388,8 @@ CREATE TABLE public.organization_oidc_providers (
     updated_at timestamp without time zone DEFAULT now() NOT NULL,
     deleted_at timestamp without time zone,
     allowed_groups jsonb DEFAULT '[]'::jsonb NOT NULL,
-    group_role_mappings jsonb DEFAULT '{}'::jsonb NOT NULL
+    group_role_mappings jsonb DEFAULT '{}'::jsonb NOT NULL,
+    groups_claim text DEFAULT ''::text NOT NULL
 );
 
 
@@ -2243,7 +2244,7 @@ SET row_security = off;
 --
 
 COPY public.schema_migrations (version, dirty) FROM stdin;
-20260615221601	f
+20260616094553	f
 \.
 
 

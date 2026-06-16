@@ -30,6 +30,7 @@ func serializeOIDCProvider(p *models.OrganizationOIDCProvider) *pb.OIDCProvider 
 		AllowedEmailDomains: []string(p.AllowedEmailDomains),
 		AllowedGroups:       []string(p.AllowedGroups),
 		GroupRoleMappings:   p.GroupRoleMappings.Data(),
+		GroupsClaim:         p.GroupsClaim,
 		Enabled:             p.Enabled,
 		OrganizationId:      p.OrganizationID.String(),
 	}

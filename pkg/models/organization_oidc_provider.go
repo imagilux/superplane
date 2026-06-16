@@ -33,6 +33,7 @@ type OrganizationOIDCProvider struct {
 	AllowedEmailDomains datatypes.JSONSlice[string]
 	AllowedGroups       datatypes.JSONSlice[string]
 	GroupRoleMappings   datatypes.JSONType[map[string]string]
+	GroupsClaim         string
 	Enabled             bool
 	CreatedBy           *uuid.UUID
 	CreatedAt           *time.Time
@@ -146,6 +147,30 @@ func (p *OrganizationOIDCProvider) ResolveRole(groups []string) string {
 // gate access or map roles), in which case the groups scope must be requested.
 func (p *OrganizationOIDCProvider) HasGroupFeatures() bool {
 	return len(p.AllowedGroups) > 0 || len(p.GroupRoleMappings.Data()) > 0
+}
+
+// GroupsClaimOrDefault returns the ID-token claim that group membership is read
+// from, defaulting to "groups" when the provider hasn't overridden it. Set it
+// for IdPs (e.g. Okta, Entra ID) that emit groups under a different claim name.
+func (p *OrganizationOIDCProvider) GroupsClaimOrDefault() string {
+	if p.GroupsClaim == "" {
+		return "groups"
+	}
+	return p.GroupsClaim
+}
+
+// UsesDefaultGroupsClaim reports whether the provider reads groups from the
+// conventional "groups" claim — used to decide whether to auto-request the
+// "groups" scope (only safe for the default; a custom claim's scope is the
+// admin's responsibility).
+func (p *OrganizationOIDCProvider) UsesDefaultGroupsClaim() bool {
+	return p.GroupsClaim == ""
+}
+
+// SetGroupsClaim sets the groups claim name (trimmed); empty restores the
+// default "groups".
+func (p *OrganizationOIDCProvider) SetGroupsClaim(claim string) {
+	p.GroupsClaim = strings.TrimSpace(claim)
 }
 
 func orgRoleRank(role string) int {

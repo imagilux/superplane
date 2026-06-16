@@ -58,7 +58,9 @@ func (a *Handler) oidcConfig(r *http.Request, provider *models.OrganizationOIDCP
 	}
 
 	scopes := []string(provider.Scopes)
-	if provider.HasGroupFeatures() {
+	// Auto-request the conventional "groups" scope only when reading the default
+	// "groups" claim; for a custom groups claim the admin supplies the scope.
+	if provider.HasGroupFeatures() && provider.UsesDefaultGroupsClaim() {
 		scopes = ensureScope(scopes, "groups")
 	}
 
@@ -69,6 +71,7 @@ func (a *Handler) oidcConfig(r *http.Request, provider *models.OrganizationOIDCP
 		ClientSecret: secret,
 		RedirectURL:  ssoCallbackURL(orgID, slug),
 		Scopes:       scopes,
+		GroupsClaim:  provider.GroupsClaim,
 	}, true
 }
 

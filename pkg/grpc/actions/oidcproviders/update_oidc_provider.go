@@ -50,6 +50,7 @@ func UpdateOIDCProvider(ctx context.Context, req *pb.UpdateOIDCProviderRequest, 
 	provider.SetAllowedEmailDomains(req.AllowedEmailDomains)
 	provider.SetAllowedGroups(req.AllowedGroups)
 	provider.SetGroupRoleMappings(req.GroupRoleMappings)
+	provider.SetGroupsClaim(req.GroupsClaim)
 	provider.Enabled = req.Enabled
 
 	if req.ClientSecret != "" {
