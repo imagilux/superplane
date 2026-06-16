@@ -258,6 +258,21 @@ export const Login: React.FC = () => {
   const showProviderButtons = hasProviders && (!isSignupMode || canSignup);
   const useMagicCodePrimary = authConfig.magicCodeEnabled && !showPasswordLogin;
   const showSsoOption = authConfig.ssoEnabled && !isSignupMode && (!useMagicCodePrimary || magicCodeStep === "email");
+  // SSO is the only available method when nothing else is configured/enabled.
+  const ssoOnly =
+    authConfig.ssoEnabled &&
+    !canLoginWithPassword &&
+    !canSignupWithPassword &&
+    !showProviderButtons &&
+    !useMagicCodePrimary;
+
+  // When SSO is the only method, land directly on its email-entry form rather
+  // than the extra "Sign in with SSO" click.
+  useEffect(() => {
+    if (ssoOnly) {
+      setShowSsoForm(true);
+    }
+  }, [ssoOnly]);
 
   useEffect(() => {
     if (!canSignup && isSignupMode) {
@@ -509,7 +524,12 @@ export const Login: React.FC = () => {
     }
   };
 
-  const hasAnyFormMethod = canLoginWithPassword || canSignupWithPassword || showProviderButtons || useMagicCodePrimary;
+  const hasAnyFormMethod =
+    canLoginWithPassword ||
+    canSignupWithPassword ||
+    showProviderButtons ||
+    useMagicCodePrimary ||
+    authConfig.ssoEnabled;
 
   const getHeading = () => {
     if (isSignupMode) return "Create your account";
