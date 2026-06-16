@@ -333,6 +333,8 @@ CREATE TABLE public.installation_metadata (
     updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
     allow_private_network_access boolean DEFAULT false NOT NULL,
     password_login_disabled boolean DEFAULT false NOT NULL,
+    sso_login_hint_enabled boolean DEFAULT false NOT NULL,
+    sso_prompt_none_enabled boolean DEFAULT false NOT NULL,
     CONSTRAINT installation_metadata_singleton CHECK ((id = 1))
 );
 
@@ -2244,7 +2246,7 @@ SET row_security = off;
 --
 
 COPY public.schema_migrations (version, dirty) FROM stdin;
-20260616094553	f
+20260616120000	f
 \.
 
 

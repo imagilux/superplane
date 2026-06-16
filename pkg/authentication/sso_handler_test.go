@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/gorilla/mux"
 	"github.com/stretchr/testify/assert"
@@ -113,6 +114,77 @@ func TestSSOFlow_HappyPath(t *testing.T) {
 	roles, err := r.AuthService.GetUserRolesForOrg(context.Background(), user.ID.String(), orgID)
 	require.NoError(t, err)
 	assert.True(t, hasRole(roles, models.RoleOrgViewer), "SSO user should get the org_viewer role")
+}
+
+func TestSSOLogin_LoginHintAndPromptGating(t *testing.T) {
+	h, _, _, orgID, slug, _ := setupSSO(t)
+
+	// Run handleSSOLogin with optional login_hint/prompt query params and return
+	// the query of the resulting authorize-redirect URL.
+	login := func(t *testing.T, query string) url.Values {
+		target := "/auth/sso/" + orgID + "/" + slug
+		if query != "" {
+			target += "?" + query
+		}
+		req := mux.SetURLVars(httptest.NewRequest("GET", target, nil), map[string]string{"orgId": orgID, "providerSlug": slug})
+		rec := httptest.NewRecorder()
+		h.handleSSOLogin(rec, req)
+		require.Equal(t, http.StatusTemporaryRedirect, rec.Code)
+		loc, err := url.Parse(rec.Header().Get("Location"))
+		require.NoError(t, err)
+		return loc.Query()
+	}
+
+	setOpts := func(loginHint, promptNone bool) {
+		require.NoError(t, models.UpdateInstallationMetadata(&models.InstallationMetadata{
+			SSOLoginHintEnabled:  loginHint,
+			SSOPromptNoneEnabled: promptNone,
+			UpdatedAt:            time.Now(),
+		}))
+	}
+
+	t.Run("disabled: neither parameter is forwarded", func(t *testing.T) {
+		setOpts(false, false)
+		q := login(t, "login_hint=user@example.com&prompt=none")
+		assert.Empty(t, q.Get("login_hint"))
+		assert.Empty(t, q.Get("prompt"))
+	})
+
+	t.Run("login_hint forwarded only when enabled, prompt stays gated", func(t *testing.T) {
+		setOpts(true, false)
+		q := login(t, "login_hint=user@example.com&prompt=none")
+		assert.Equal(t, "user@example.com", q.Get("login_hint"))
+		assert.Empty(t, q.Get("prompt"), "prompt=none must stay gated by its own setting")
+	})
+
+	t.Run("prompt=none forwarded only when enabled and requested", func(t *testing.T) {
+		setOpts(true, true)
+		q := login(t, "login_hint=user@example.com&prompt=none")
+		assert.Equal(t, "user@example.com", q.Get("login_hint"))
+		assert.Equal(t, "none", q.Get("prompt"))
+
+		// Enabled but not requested: not added.
+		q2 := login(t, "login_hint=user@example.com")
+		assert.Empty(t, q2.Get("prompt"))
+	})
+}
+
+func TestSSOCallback_SilentAuthErrorMapsToInteractionRequired(t *testing.T) {
+	h, _, _, orgID, slug, _ := setupSSO(t)
+
+	state, _, cookie := doSSOLogin(t, h, orgID, slug, "/dashboard")
+
+	// The IdP returns error=login_required (the typical prompt=none "no session"
+	// outcome) instead of a code; the state is still echoed, so CSRF passes.
+	target := "/auth/sso/" + orgID + "/" + slug + "/callback?error=login_required&state=" + url.QueryEscape(state)
+	req := mux.SetURLVars(httptest.NewRequest("GET", target, nil), map[string]string{"orgId": orgID, "providerSlug": slug})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	h.handleSSOCallback(rec, req)
+
+	require.Equal(t, http.StatusTemporaryRedirect, rec.Code)
+	assert.Contains(t, rec.Header().Get("Location"), "sso_error=interaction_required")
+	assert.False(t, hasCookie(rec, "account_token"), "no session should be issued on a silent-auth failure")
 }
 
 func TestSSOFlow_DomainGateRejectsDisallowedEmail(t *testing.T) {

@@ -18,6 +18,8 @@ type AuthConfig = {
   signupEnabled: boolean;
   magicCodeEnabled: boolean;
   ssoEnabled: boolean;
+  ssoLoginHintEnabled: boolean;
+  ssoPromptNoneEnabled: boolean;
 };
 
 type SsoProviderOption = {
@@ -90,6 +92,8 @@ export const Login: React.FC = () => {
     signupEnabled: false,
     magicCodeEnabled: false,
     ssoEnabled: false,
+    ssoLoginHintEnabled: false,
+    ssoPromptNoneEnabled: false,
   });
   const [configLoading, setConfigLoading] = useState(true);
   const [configError, setConfigError] = useState<string | null>(null);
@@ -227,6 +231,8 @@ export const Login: React.FC = () => {
             signupEnabled: Boolean(data.signupEnabled),
             magicCodeEnabled: Boolean(data.magicCodeEnabled),
             ssoEnabled: Boolean(data.ssoEnabled),
+            ssoLoginHintEnabled: Boolean(data.ssoLoginHintEnabled),
+            ssoPromptNoneEnabled: Boolean(data.ssoPromptNoneEnabled),
           });
         }
       } catch {
@@ -426,9 +432,18 @@ export const Login: React.FC = () => {
 
   const navigateToSsoProvider = (provider: SsoProviderOption) => {
     recordLastUsedLoginMethod("sso");
+    const params = new URLSearchParams();
+    if (safeRedirect) {
+      params.set("redirect", safeRedirect);
+    }
+    // Forward the entered email as login_hint when the installation allows it, so
+    // the IdP can pre-fill the username. The backend ignores it unless enabled.
+    if (authConfig.ssoLoginHintEnabled && ssoEmail.trim()) {
+      params.set("login_hint", ssoEmail.trim());
+    }
+    const query = params.toString();
     const separator = provider.loginUrl.includes("?") ? "&" : "?";
-    const redirectSuffix = safeRedirect ? `${separator}redirect=${encodeURIComponent(safeRedirect)}` : "";
-    window.location.href = `${provider.loginUrl}${redirectSuffix}`;
+    window.location.href = query ? `${provider.loginUrl}${separator}${query}` : provider.loginUrl;
   };
 
   const handleSsoSubmit = async (e: React.FormEvent) => {

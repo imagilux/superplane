@@ -45,6 +45,8 @@ type installationSettingsResponse struct {
 	PasswordLoginDisableAllowed bool               `json:"password_login_disable_allowed"`
 	PasswordLoginDisableReason  string             `json:"password_login_disable_reason,omitempty"`
 	PasswordOnlyAccounts        []lockedOutAccount `json:"password_only_accounts"`
+	SSOLoginHintEnabled         bool               `json:"sso_login_hint_enabled"`
+	SSOPromptNoneEnabled        bool               `json:"sso_prompt_none_enabled"`
 	EffectiveBlockedHTTPHosts   []string           `json:"effective_blocked_http_hosts"`
 	EffectivePrivateIPRanges    []string           `json:"effective_private_ip_ranges"`
 	BlockedHTTPHostsOverridden  bool               `json:"blocked_http_hosts_overridden"`
@@ -63,6 +65,8 @@ type installationSettingsRequest struct {
 	AllowPrivateNetworkAccess   *bool   `json:"allow_private_network_access"`
 	PasswordLoginDisabled       *bool   `json:"password_login_disabled"`
 	DeactivateLockedOutAccounts *bool   `json:"deactivate_locked_out_accounts"`
+	SSOLoginHintEnabled         *bool   `json:"sso_login_hint_enabled"`
+	SSOPromptNoneEnabled        *bool   `json:"sso_prompt_none_enabled"`
 	SMTPEnabled                 *bool   `json:"smtp_enabled"`
 	SMTPHost                    *string `json:"smtp_host"`
 	SMTPPort                    *int    `json:"smtp_port"`
@@ -230,7 +234,8 @@ func (s *Server) updateInstallationSettings(ctx context.Context, req installatio
 	}
 
 	return database.Conn().Transaction(func(tx *gorm.DB) error {
-		if req.AllowPrivateNetworkAccess != nil || req.PasswordLoginDisabled != nil {
+		if req.AllowPrivateNetworkAccess != nil || req.PasswordLoginDisabled != nil ||
+			req.SSOLoginHintEnabled != nil || req.SSOPromptNoneEnabled != nil {
 			metadata, err := models.GetInstallationMetadataInTransaction(tx)
 			if err != nil {
 				return err
@@ -241,6 +246,12 @@ func (s *Server) updateInstallationSettings(ctx context.Context, req installatio
 			}
 			if req.PasswordLoginDisabled != nil {
 				metadata.PasswordLoginDisabled = *req.PasswordLoginDisabled
+			}
+			if req.SSOLoginHintEnabled != nil {
+				metadata.SSOLoginHintEnabled = *req.SSOLoginHintEnabled
+			}
+			if req.SSOPromptNoneEnabled != nil {
+				metadata.SSOPromptNoneEnabled = *req.SSOPromptNoneEnabled
 			}
 			metadata.UpdatedAt = time.Now()
 
@@ -278,6 +289,8 @@ func (s *Server) buildInstallationSettingsResponse(account *models.Account) (ins
 		AllowPrivateNetworkAccess:   policy.AllowPrivateNetworkAccess,
 		PasswordLoginDisabled:       metadata.PasswordLoginDisabled,
 		PasswordLoginDisableAllowed: true,
+		SSOLoginHintEnabled:         metadata.SSOLoginHintEnabled,
+		SSOPromptNoneEnabled:        metadata.SSOPromptNoneEnabled,
 		EffectiveBlockedHTTPHosts:   policy.BlockedHosts,
 		EffectivePrivateIPRanges:    policy.PrivateIPRanges,
 		BlockedHTTPHostsOverridden:  policy.BlockedHostsOverridden,

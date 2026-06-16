@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"golang.org/x/oauth2"
 )
 
 // AuthResult is the verified identity an Authenticator returns after completing
@@ -37,13 +38,26 @@ var (
 	ErrMissingEmail  = errors.New("sso: id token has no email claim")
 )
 
+// AuthOptions carries optional OIDC authorization-request parameters. Both are
+// gated by installation settings at the call site (see the SSO handler), so an
+// implementation can emit them unconditionally when set.
+type AuthOptions struct {
+	// LoginHint, when non-empty, is sent as the OIDC `login_hint` parameter so the
+	// IdP can pre-fill the username on its login form.
+	LoginHint string
+	// PromptNone, when true, sends `prompt=none` to request silent authentication:
+	// the IdP completes without UI if a usable session exists, otherwise it returns
+	// an error (e.g. login_required) instead of prompting.
+	PromptNone bool
+}
+
 // Authenticator completes a provider's authorization flow. AuthCodeURL builds
 // the redirect to the IdP; Complete exchanges the returned code and verifies the
 // resulting identity (ID token + nonce, for OIDC). It is the seam the provider
 // `type` dispatches to: add a new provider type (e.g. SAML) as another
 // implementation here rather than branching inside the HTTP handler.
 type Authenticator interface {
-	AuthCodeURL(ctx context.Context, state, nonce string) (string, error)
+	AuthCodeURL(ctx context.Context, state, nonce string, opts AuthOptions) (string, error)
 	Complete(ctx context.Context, code, nonce string) (*AuthResult, error)
 }
 
@@ -59,13 +73,21 @@ func (r *Registry) Authenticator(c Config) Authenticator {
 	return &oidcAuthenticator{registry: r, config: c}
 }
 
-func (a *oidcAuthenticator) AuthCodeURL(ctx context.Context, state, nonce string) (string, error) {
+func (a *oidcAuthenticator) AuthCodeURL(ctx context.Context, state, nonce string, opts AuthOptions) (string, error) {
 	oauthConfig, _, err := a.registry.Get(ctx, a.config)
 	if err != nil {
 		return "", err
 	}
 
-	return oauthConfig.AuthCodeURL(state, oidc.Nonce(nonce)), nil
+	params := []oauth2.AuthCodeOption{oidc.Nonce(nonce)}
+	if opts.LoginHint != "" {
+		params = append(params, oauth2.SetAuthURLParam("login_hint", opts.LoginHint))
+	}
+	if opts.PromptNone {
+		params = append(params, oauth2.SetAuthURLParam("prompt", "none"))
+	}
+
+	return oauthConfig.AuthCodeURL(state, params...), nil
 }
 
 func (a *oidcAuthenticator) Complete(ctx context.Context, code, nonce string) (*AuthResult, error) {

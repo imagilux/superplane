@@ -17,6 +17,8 @@ type InstallationMetadata struct {
 	InstallationID            string `gorm:"type:varchar(64)"`
 	AllowPrivateNetworkAccess bool
 	PasswordLoginDisabled     bool
+	SSOLoginHintEnabled       bool
+	SSOPromptNoneEnabled      bool
 	CreatedAt                 time.Time
 	UpdatedAt                 time.Time
 }
@@ -56,6 +58,8 @@ func UpdateInstallationMetadataInTransaction(tx *gorm.DB, metadata *Installation
 		Updates(map[string]any{
 			"allow_private_network_access": metadata.AllowPrivateNetworkAccess,
 			"password_login_disabled":      metadata.PasswordLoginDisabled,
+			"sso_login_hint_enabled":       metadata.SSOLoginHintEnabled,
+			"sso_prompt_none_enabled":      metadata.SSOPromptNoneEnabled,
 			"updated_at":                   metadata.UpdatedAt,
 		}).
 		Error

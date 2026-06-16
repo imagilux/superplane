@@ -26,6 +26,8 @@ type InstallationSettingsResponse = {
   password_login_disable_allowed: boolean;
   password_login_disable_reason?: string;
   password_only_accounts: PasswordOnlyAccount[];
+  sso_login_hint_enabled: boolean;
+  sso_prompt_none_enabled: boolean;
   effective_blocked_http_hosts: string[];
   effective_private_ip_ranges: string[];
   blocked_http_hosts_overridden: boolean;
@@ -77,9 +79,13 @@ type IdentitySectionProps = {
   passwordLoginDisableReason?: string;
   passwordOnlyAccounts: PasswordOnlyAccount[];
   disablingPasswordLogin: boolean;
+  ssoLoginHintEnabled: boolean;
+  ssoPromptNoneEnabled: boolean;
   hasChanges: boolean;
   saving: boolean;
   onPasswordLoginChange: (checked: boolean) => void;
+  onSSOLoginHintChange: (checked: boolean) => void;
+  onSSOPromptNoneChange: (checked: boolean) => void;
   onSave: (deactivateLockedOutAccounts: boolean) => void;
 };
 
@@ -141,6 +147,8 @@ const getDerivedState = (
   settings: InstallationSettingsResponse | null,
   allowPrivateNetworkAccess: boolean,
   passwordLoginDisabled: boolean,
+  ssoLoginHintEnabled: boolean,
+  ssoPromptNoneEnabled: boolean,
   form: SMTPFormState,
 ): DerivedState => {
   const hasSMTPSettings = settings?.smtp_enabled ?? false;
@@ -149,7 +157,11 @@ const getDerivedState = (
     blockedHosts: settings?.effective_blocked_http_hosts ?? [],
     privateRanges: settings?.effective_private_ip_ranges ?? [],
     hasNetworkChanges: settings != null && allowPrivateNetworkAccess !== settings.allow_private_network_access,
-    hasIdentityChanges: settings != null && passwordLoginDisabled !== settings.password_login_disabled,
+    hasIdentityChanges:
+      settings != null &&
+      (passwordLoginDisabled !== settings.password_login_disabled ||
+        ssoLoginHintEnabled !== settings.sso_login_hint_enabled ||
+        ssoPromptNoneEnabled !== settings.sso_prompt_none_enabled),
     hasSMTPChanges:
       settings != null &&
       (form.enabled !== settings.smtp_enabled ||
@@ -308,9 +320,13 @@ const IdentitySection = ({
   passwordLoginDisableReason,
   passwordOnlyAccounts,
   disablingPasswordLogin,
+  ssoLoginHintEnabled,
+  ssoPromptNoneEnabled,
   hasChanges,
   saving,
   onPasswordLoginChange,
+  onSSOLoginHintChange,
+  onSSOPromptNoneChange,
   onSave,
 }: IdentitySectionProps) => {
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -373,6 +389,49 @@ const IdentitySection = ({
             {passwordLoginDisableReason}
           </Text>
         ) : null}
+      </div>
+
+      <h3 className="mt-8 text-sm font-semibold text-gray-900">Single sign-on (OIDC)</h3>
+      <Text className="mt-1 text-xs text-gray-600">
+        Optional parameters sent to per-organization SSO providers during login. They have no effect on email/password
+        or global OAuth sign-in.
+      </Text>
+
+      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 shadow-sm">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <p className="text-sm font-semibold text-gray-900">Forward login hint to SSO provider</p>
+            <Text className="mt-1 text-xs text-gray-600">
+              Pass the email entered on the sign-in page to the IdP as{" "}
+              <code className="rounded bg-slate-200 px-1 py-0.5 font-mono text-[11px]">login_hint</code> so it can
+              pre-fill the username on its login form.
+            </Text>
+          </div>
+          <Switch
+            data-testid="installation-sso-login-hint-switch"
+            checked={ssoLoginHintEnabled}
+            onCheckedChange={onSSOLoginHintChange}
+          />
+        </div>
+      </div>
+
+      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 shadow-sm">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <p className="text-sm font-semibold text-gray-900">Allow silent SSO authentication</p>
+            <Text className="mt-1 text-xs text-gray-600">
+              Permit the SSO flow to request{" "}
+              <code className="rounded bg-slate-200 px-1 py-0.5 font-mono text-[11px]">prompt=none</code>, letting a
+              user who already has a valid IdP session sign in without seeing a login screen. Required by the
+              silent-login sequence.
+            </Text>
+          </div>
+          <Switch
+            data-testid="installation-sso-prompt-none-switch"
+            checked={ssoPromptNoneEnabled}
+            onCheckedChange={onSSOPromptNoneChange}
+          />
+        </div>
       </div>
 
       <div className="mt-6 flex flex-wrap items-center gap-3 border-t border-slate-200 pt-6">
@@ -587,6 +646,8 @@ const useInstallationSettingsState = () => {
   const [loading, setLoading] = useState(true);
   const [allowPrivateNetworkAccess, setAllowPrivateNetworkAccess] = useState(false);
   const [passwordLoginDisabled, setPasswordLoginDisabled] = useState(false);
+  const [ssoLoginHintEnabled, setSSOLoginHintEnabled] = useState(false);
+  const [ssoPromptNoneEnabled, setSSOPromptNoneEnabled] = useState(false);
   const [savingNetwork, setSavingNetwork] = useState(false);
   const [savingIdentity, setSavingIdentity] = useState(false);
   const [smtpForm, setSMTPForm] = useState<SMTPFormState>(emptySMTPForm);
@@ -596,6 +657,8 @@ const useInstallationSettingsState = () => {
     setSettings(data);
     setAllowPrivateNetworkAccess(data.allow_private_network_access);
     setPasswordLoginDisabled(data.password_login_disabled);
+    setSSOLoginHintEnabled(data.sso_login_hint_enabled);
+    setSSOPromptNoneEnabled(data.sso_prompt_none_enabled);
     setSMTPForm(toSMTPFormState(data));
   }, []);
 
@@ -663,6 +726,8 @@ const useInstallationSettingsState = () => {
       try {
         const body: Record<string, unknown> = {
           password_login_disabled: passwordLoginDisabled,
+          sso_login_hint_enabled: ssoLoginHintEnabled,
+          sso_prompt_none_enabled: ssoPromptNoneEnabled,
         };
 
         if (deactivateLockedOutAccounts) {
@@ -676,7 +741,7 @@ const useInstallationSettingsState = () => {
         setSavingIdentity(false);
       }
     },
-    [passwordLoginDisabled, patchSettings],
+    [passwordLoginDisabled, ssoLoginHintEnabled, ssoPromptNoneEnabled, patchSettings],
   );
 
   const saveSMTPSettings = useCallback(async () => {
@@ -702,12 +767,16 @@ const useInstallationSettingsState = () => {
     loading,
     allowPrivateNetworkAccess,
     passwordLoginDisabled,
+    ssoLoginHintEnabled,
+    ssoPromptNoneEnabled,
     savingNetwork,
     savingIdentity,
     smtpForm,
     savingSMTP,
     setAllowPrivateNetworkAccess,
     setPasswordLoginDisabled,
+    setSSOLoginHintEnabled,
+    setSSOPromptNoneEnabled,
     setSMTPField,
     saveNetworkSettings,
     saveIdentitySettings,
@@ -721,12 +790,16 @@ const InstallationSettings: React.FC = () => {
     loading,
     allowPrivateNetworkAccess,
     passwordLoginDisabled,
+    ssoLoginHintEnabled,
+    ssoPromptNoneEnabled,
     savingNetwork,
     savingIdentity,
     smtpForm,
     savingSMTP,
     setAllowPrivateNetworkAccess,
     setPasswordLoginDisabled,
+    setSSOLoginHintEnabled,
+    setSSOPromptNoneEnabled,
     setSMTPField,
     saveNetworkSettings,
     saveIdentitySettings,
@@ -742,7 +815,14 @@ const InstallationSettings: React.FC = () => {
     );
   }
 
-  const derivedState = getDerivedState(settings, allowPrivateNetworkAccess, passwordLoginDisabled, smtpForm);
+  const derivedState = getDerivedState(
+    settings,
+    allowPrivateNetworkAccess,
+    passwordLoginDisabled,
+    ssoLoginHintEnabled,
+    ssoPromptNoneEnabled,
+    smtpForm,
+  );
 
   return (
     <div className="space-y-6">
@@ -771,9 +851,13 @@ const InstallationSettings: React.FC = () => {
         passwordLoginDisableReason={settings?.password_login_disable_reason}
         passwordOnlyAccounts={settings?.password_only_accounts ?? []}
         disablingPasswordLogin={passwordLoginDisabled && !(settings?.password_login_disabled ?? false)}
+        ssoLoginHintEnabled={ssoLoginHintEnabled}
+        ssoPromptNoneEnabled={ssoPromptNoneEnabled}
         hasChanges={derivedState.hasIdentityChanges}
         saving={savingIdentity}
         onPasswordLoginChange={setPasswordLoginDisabled}
+        onSSOLoginHintChange={setSSOLoginHintEnabled}
+        onSSOPromptNoneChange={setSSOPromptNoneEnabled}
         onSave={saveIdentitySettings}
       />
 

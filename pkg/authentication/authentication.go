@@ -342,18 +342,32 @@ func (a *Handler) handleAuthConfig(w http.ResponseWriter, r *http.Request) {
 		ssoEnabled = enabled
 	}
 
+	// SSO login-flow options, set by an installation admin in Identity settings.
+	// Exposed so the login surface knows whether to forward a login_hint and (for
+	// the silent-login sequence) whether prompt=none is permitted.
+	ssoLoginHintEnabled := false
+	ssoPromptNoneEnabled := false
+	if meta, err := models.GetInstallationMetadata(); err == nil {
+		ssoLoginHintEnabled = meta.SSOLoginHintEnabled
+		ssoPromptNoneEnabled = meta.SSOPromptNoneEnabled
+	}
+
 	response := struct {
 		Providers            []string `json:"providers"`
 		PasswordLoginEnabled bool     `json:"passwordLoginEnabled"`
 		SignupEnabled        bool     `json:"signupEnabled"`
 		MagicCodeEnabled     bool     `json:"magicCodeEnabled"`
 		SSOEnabled           bool     `json:"ssoEnabled"`
+		SSOLoginHintEnabled  bool     `json:"ssoLoginHintEnabled"`
+		SSOPromptNoneEnabled bool     `json:"ssoPromptNoneEnabled"`
 	}{
 		Providers:            providerNames,
 		PasswordLoginEnabled: a.effectivePasswordLoginEnabled(),
 		SignupEnabled:        !a.blockSignup,
 		MagicCodeEnabled:     a.magicCodeEnabled,
 		SSOEnabled:           ssoEnabled,
+		SSOLoginHintEnabled:  ssoLoginHintEnabled,
+		SSOPromptNoneEnabled: ssoPromptNoneEnabled,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

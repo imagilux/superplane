@@ -316,6 +316,66 @@ func TestAdminInstallationNetworkSettings(t *testing.T) {
 	})
 }
 
+func TestAdminInstallationSSOLoginOptions(t *testing.T) {
+	server, _, token := setupAdminTestServer(t)
+
+	patch := func(t *testing.T, body map[string]any) installationSettingsResponse {
+		raw, err := json.Marshal(body)
+		require.NoError(t, err)
+		response := execRequest(server, requestParams{
+			method:      "PATCH",
+			path:        "/admin/api/installation/network-settings",
+			body:        raw,
+			authCookie:  token,
+			contentType: "application/json",
+		})
+		require.Equal(t, http.StatusOK, response.Code)
+		var result installationSettingsResponse
+		require.NoError(t, json.Unmarshal(response.Body.Bytes(), &result))
+		return result
+	}
+
+	t.Run("default off", func(t *testing.T) {
+		response := execRequest(server, requestParams{
+			method:     "GET",
+			path:       "/admin/api/installation/network-settings",
+			authCookie: token,
+		})
+		require.Equal(t, http.StatusOK, response.Code)
+		var result installationSettingsResponse
+		require.NoError(t, json.Unmarshal(response.Body.Bytes(), &result))
+		assert.False(t, result.SSOLoginHintEnabled)
+		assert.False(t, result.SSOPromptNoneEnabled)
+	})
+
+	t.Run("enabling both persists to metadata and response", func(t *testing.T) {
+		result := patch(t, map[string]any{
+			"sso_login_hint_enabled":  true,
+			"sso_prompt_none_enabled": true,
+		})
+		assert.True(t, result.SSOLoginHintEnabled)
+		assert.True(t, result.SSOPromptNoneEnabled)
+
+		metadata, err := models.GetInstallationMetadata()
+		require.NoError(t, err)
+		assert.True(t, metadata.SSOLoginHintEnabled)
+		assert.True(t, metadata.SSOPromptNoneEnabled)
+	})
+
+	t.Run("a partial update does not clobber the other flag", func(t *testing.T) {
+		result := patch(t, map[string]any{
+			"sso_login_hint_enabled": false,
+		})
+		assert.False(t, result.SSOLoginHintEnabled)
+		assert.True(t, result.SSOPromptNoneEnabled, "prompt_none must survive an update that omits it")
+
+		metadata, err := models.GetInstallationMetadata()
+		require.NoError(t, err)
+		assert.False(t, metadata.SSOLoginHintEnabled)
+		assert.True(t, metadata.SSOPromptNoneEnabled)
+	})
+}
+
 func TestAdminPasswordLoginDisableGuard(t *testing.T) {
 	server, r, token := setupAdminTestServer(t)
 

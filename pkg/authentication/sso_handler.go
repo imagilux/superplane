@@ -48,6 +48,32 @@ func emailDomain(email string) string {
 	return strings.ToLower(email[at+1:])
 }
 
+// ssoAuthOptions reads optional OIDC authorization-request parameters from the
+// login request, each gated by an installation-admin setting:
+//   - login_hint: the caller-supplied hint (the email used for home-realm
+//     discovery), forwarded so the IdP can pre-fill its login form.
+//   - prompt=none: silent authentication. Only honored when the caller explicitly
+//     asks for it (?prompt=none), so the interactive flow is unaffected; the
+//     silent-login sequence is what sets it. Missing/disabled => no parameter.
+func (a *Handler) ssoAuthOptions(r *http.Request) sso.AuthOptions {
+	var opts sso.AuthOptions
+
+	meta, err := models.GetInstallationMetadata()
+	if err != nil {
+		log.Warnf("SSO: failed to load installation metadata for auth options: %v", err)
+		return opts
+	}
+
+	if meta.SSOLoginHintEnabled {
+		opts.LoginHint = strings.TrimSpace(r.URL.Query().Get("login_hint"))
+	}
+	if meta.SSOPromptNoneEnabled && r.URL.Query().Get("prompt") == "none" {
+		opts.PromptNone = true
+	}
+
+	return opts
+}
+
 // oidcConfig turns an OIDC provider into an sso.Config — decrypting the client
 // secret and adding the `groups` scope when group features are configured.
 func (a *Handler) oidcConfig(r *http.Request, provider *models.OrganizationOIDCProvider, orgID, slug string) (sso.Config, bool) {
@@ -128,7 +154,7 @@ func (a *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authURL, err := authr.AuthCodeURL(r.Context(), state, nonce)
+	authURL, err := authr.AuthCodeURL(r.Context(), state, nonce, a.ssoAuthOptions(r))
 	if err != nil {
 		log.Errorf("OIDC discovery failed for org %s provider %s: %v", orgID, slug, err)
 		ssoRedirectError(w, r, "provider_unavailable")
@@ -167,6 +193,17 @@ func (a *Handler) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	// the callback path must match the org/provider the flow was started for.
 	if st.State == "" || st.State != r.URL.Query().Get("state") || st.OrgID != orgID || st.ProviderSlug != slug {
 		ssoRedirectError(w, r, "invalid_state")
+		return
+	}
+
+	// The IdP can return an authorization error instead of a code — notably
+	// login_required / interaction_required when a silent (prompt=none) attempt
+	// finds no usable session. Surface a stable reason so a silent-login caller
+	// can fall back to an interactive sign-in. (Error responses echo state, so
+	// the CSRF check above still applies.)
+	if errParam := r.URL.Query().Get("error"); errParam != "" {
+		log.Infof("SSO callback returned error for org %s provider %s: %s", orgID, slug, errParam)
+		ssoRedirectError(w, r, ssoCallbackErrorReason(errParam))
 		return
 	}
 
@@ -290,6 +327,19 @@ func completeErrorReason(err error) string {
 		return "missing_email_claim"
 	default:
 		return "invalid_id_token"
+	}
+}
+
+// ssoCallbackErrorReason maps an OIDC authorization-error code (RFC 6749 §4.1.2.1
+// / OIDC Core §3.1.2.6) to a stable sso_error reason. The "no usable session"
+// outcomes of a prompt=none attempt collapse to interaction_required so a
+// silent-login caller knows to retry interactively.
+func ssoCallbackErrorReason(errParam string) string {
+	switch errParam {
+	case "login_required", "interaction_required", "consent_required", "account_selection_required":
+		return "interaction_required"
+	default:
+		return "sso_failed"
 	}
 }
 
