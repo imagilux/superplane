@@ -101,6 +101,46 @@ func (a *Handler) oidcConfig(r *http.Request, provider *models.OrganizationOIDCP
 	}, true
 }
 
+// idpLogoutURL returns the IdP RP-initiated logout URL to redirect to on sign-out
+// when the installation has enabled IdP logout and exactly one SSO provider is
+// configured (matching the auto-login scoping). It carries the post-logout
+// landing and client_id so the IdP can validate the redirect. Returns "" to fall
+// back to the local logout landing (toggle off, no sole provider, the IdP
+// advertises no end-session endpoint, or any error).
+func (a *Handler) idpLogoutURL(r *http.Request) string {
+	meta, err := models.GetInstallationMetadata()
+	if err != nil || !meta.SSOIdPLogoutEnabled {
+		return ""
+	}
+
+	provider, err := models.SoleEnabledOIDCProvider()
+	if err != nil || provider == nil {
+		return ""
+	}
+
+	cfg, ok := a.oidcConfig(r, provider, provider.OrganizationID.String(), provider.Slug)
+	if !ok {
+		return ""
+	}
+
+	endSession, err := a.ssoRegistry.EndSessionEndpoint(r.Context(), cfg)
+	if err != nil || endSession == "" {
+		return ""
+	}
+
+	u, err := url.Parse(endSession)
+	if err != nil {
+		return ""
+	}
+
+	base := strings.TrimRight(os.Getenv("BASE_URL"), "/")
+	q := u.Query()
+	q.Set("client_id", provider.ClientID)
+	q.Set("post_logout_redirect_uri", base+"/login?logged_out=1")
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
 // authenticatorFor loads an enabled provider and returns an Authenticator for
 // it, dispatching on the provider type. This is the seam where additional
 // provider types (e.g. SAML) plug in — each type builds its own config and

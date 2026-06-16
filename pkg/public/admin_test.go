@@ -347,6 +347,7 @@ func TestAdminInstallationSSOLoginOptions(t *testing.T) {
 		assert.False(t, result.SSOLoginHintEnabled)
 		assert.False(t, result.SSOPromptNoneEnabled)
 		assert.False(t, result.SSOAutoLoginEnabled)
+		assert.False(t, result.SSOIdPLogoutEnabled)
 	})
 
 	t.Run("enabling all persists to metadata and response", func(t *testing.T) {
@@ -354,16 +355,19 @@ func TestAdminInstallationSSOLoginOptions(t *testing.T) {
 			"sso_login_hint_enabled":  true,
 			"sso_prompt_none_enabled": true,
 			"sso_auto_login_enabled":  true,
+			"sso_idp_logout_enabled":  true,
 		})
 		assert.True(t, result.SSOLoginHintEnabled)
 		assert.True(t, result.SSOPromptNoneEnabled)
 		assert.True(t, result.SSOAutoLoginEnabled)
+		assert.True(t, result.SSOIdPLogoutEnabled)
 
 		metadata, err := models.GetInstallationMetadata()
 		require.NoError(t, err)
 		assert.True(t, metadata.SSOLoginHintEnabled)
 		assert.True(t, metadata.SSOPromptNoneEnabled)
 		assert.True(t, metadata.SSOAutoLoginEnabled)
+		assert.True(t, metadata.SSOIdPLogoutEnabled)
 	})
 
 	t.Run("a partial update does not clobber the other flag", func(t *testing.T) {

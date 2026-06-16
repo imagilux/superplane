@@ -237,6 +237,40 @@ func TestAuthConfig_SSOAutoLoginURL(t *testing.T) {
 	})
 }
 
+func TestLogout(t *testing.T) {
+	h, _, mock, _, _, _ := setupSSO(t)
+
+	logout := func(t *testing.T) string {
+		req := httptest.NewRequest("GET", "/logout", nil)
+		rec := httptest.NewRecorder()
+		h.handleLogout(rec, req)
+		require.Equal(t, http.StatusTemporaryRedirect, rec.Code)
+		return rec.Header().Get("Location")
+	}
+
+	t.Run("local logout lands on the logged_out marker", func(t *testing.T) {
+		require.NoError(t, models.UpdateInstallationMetadata(&models.InstallationMetadata{
+			SSOIdPLogoutEnabled: false,
+			UpdatedAt:           time.Now(),
+		}))
+		assert.Equal(t, "/login?logged_out=1", logout(t))
+	})
+
+	t.Run("idp logout redirects through the end-session endpoint", func(t *testing.T) {
+		require.NoError(t, models.UpdateInstallationMetadata(&models.InstallationMetadata{
+			SSOIdPLogoutEnabled: true,
+			UpdatedAt:           time.Now(),
+		}))
+
+		loc := logout(t)
+		u, err := url.Parse(loc)
+		require.NoError(t, err)
+		assert.Equal(t, mock.Issuer+"/logout", u.Scheme+"://"+u.Host+u.Path)
+		assert.Equal(t, "test-client", u.Query().Get("client_id"))
+		assert.Equal(t, "http://localhost:8000/login?logged_out=1", u.Query().Get("post_logout_redirect_uri"))
+	})
+}
+
 func TestSSOFlow_DomainGateRejectsDisallowedEmail(t *testing.T) {
 	h, _, mock, orgID, slug, _ := setupSSO(t)
 

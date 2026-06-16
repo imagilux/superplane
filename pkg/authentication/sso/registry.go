@@ -32,9 +32,10 @@ type Config struct {
 }
 
 type entry struct {
-	oauthConfig *oauth2.Config
-	verifier    *oidc.IDTokenVerifier
-	expiresAt   time.Time
+	oauthConfig        *oauth2.Config
+	verifier           *oidc.IDTokenVerifier
+	endSessionEndpoint string
+	expiresAt          time.Time
 }
 
 // Registry caches OIDC discovery results (provider metadata + verifier) per
@@ -105,15 +106,39 @@ func (r *Registry) Get(ctx context.Context, c Config) (*oauth2.Config, *oidc.IDT
 	}
 	verifier := provider.Verifier(&oidc.Config{ClientID: c.ClientID})
 
+	// Pull the optional RP-initiated logout endpoint out of the discovery doc.
+	// Best-effort: not every IdP advertises it, and it must not fail discovery.
+	var meta struct {
+		EndSessionEndpoint string `json:"end_session_endpoint"`
+	}
+	_ = provider.Claims(&meta)
+
 	r.mu.Lock()
 	r.entries[key] = &entry{
-		oauthConfig: oauthConfig,
-		verifier:    verifier,
-		expiresAt:   time.Now().Add(r.ttl),
+		oauthConfig:        oauthConfig,
+		verifier:           verifier,
+		endSessionEndpoint: meta.EndSessionEndpoint,
+		expiresAt:          time.Now().Add(r.ttl),
 	}
 	r.mu.Unlock()
 
 	return oauthConfig, verifier, nil
+}
+
+// EndSessionEndpoint returns the IdP's RP-initiated logout endpoint from
+// discovery, or "" if the IdP does not advertise one. It populates the cache via
+// Get, so it shares the same discovery round-trip and TTL.
+func (r *Registry) EndSessionEndpoint(ctx context.Context, c Config) (string, error) {
+	if _, _, err := r.Get(ctx, c); err != nil {
+		return "", err
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if e, ok := r.entries[cacheKey(c)]; ok {
+		return e.endSessionEndpoint, nil
+	}
+	return "", nil
 }
 
 // Invalidate drops all cached entries for a provider id. Best-effort and

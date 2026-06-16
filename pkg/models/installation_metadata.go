@@ -20,8 +20,11 @@ type InstallationMetadata struct {
 	SSOLoginHintEnabled       bool
 	SSOPromptNoneEnabled      bool
 	SSOAutoLoginEnabled       bool
-	CreatedAt                 time.Time
-	UpdatedAt                 time.Time
+	// Pin the column: GORM's namer would otherwise map the mixed-case "IdP" to
+	// sso_id_p_logout_enabled, which does not match the migration.
+	SSOIdPLogoutEnabled bool `gorm:"column:sso_idp_logout_enabled"`
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 func GetInstallationMetadata() (*InstallationMetadata, error) {
@@ -62,6 +65,7 @@ func UpdateInstallationMetadataInTransaction(tx *gorm.DB, metadata *Installation
 			"sso_login_hint_enabled":       metadata.SSOLoginHintEnabled,
 			"sso_prompt_none_enabled":      metadata.SSOPromptNoneEnabled,
 			"sso_auto_login_enabled":       metadata.SSOAutoLoginEnabled,
+			"sso_idp_logout_enabled":       metadata.SSOIdPLogoutEnabled,
 			"updated_at":                   metadata.UpdatedAt,
 		}).
 		Error

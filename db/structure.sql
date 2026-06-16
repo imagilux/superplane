@@ -336,6 +336,7 @@ CREATE TABLE public.installation_metadata (
     sso_login_hint_enabled boolean DEFAULT false NOT NULL,
     sso_prompt_none_enabled boolean DEFAULT false NOT NULL,
     sso_auto_login_enabled boolean DEFAULT false NOT NULL,
+    sso_idp_logout_enabled boolean DEFAULT false NOT NULL,
     CONSTRAINT installation_metadata_singleton CHECK ((id = 1))
 );
 
@@ -2247,7 +2248,7 @@ SET row_security = off;
 --
 
 COPY public.schema_migrations (version, dirty) FROM stdin;
-20260616130000	f
+20260616140000	f
 \.
 
 

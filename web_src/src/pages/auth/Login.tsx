@@ -296,6 +296,8 @@ export const Login: React.FC = () => {
   useEffect(() => {
     if (autoLoginAttempted.current) return;
     if (!authConfig.ssoAutoLoginUrl) return;
+    // Skip right after an explicit sign-out so logout sticks (no instant reconnect).
+    if (searchParams.get("logged_out")) return;
     if (searchParams.get("sso_error") || searchParams.get("error")) return;
     if (accountLoading || account) return;
     if (inviteToken || magicLinkToken || isSignupMode) return;
@@ -612,6 +614,12 @@ export const Login: React.FC = () => {
           {configError && (
             <div className="mb-4 rounded-md border border-red-300 bg-white px-3 py-1 text-sm text-red-500">
               {configError}
+            </div>
+          )}
+
+          {searchParams.get("logged_out") && (
+            <div className="mb-4 rounded-md border border-green-300 bg-white px-3 py-1 text-sm text-green-600">
+              You’ve been signed out.
             </div>
           )}
 

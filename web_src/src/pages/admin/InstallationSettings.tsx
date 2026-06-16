@@ -29,6 +29,7 @@ type InstallationSettingsResponse = {
   sso_login_hint_enabled: boolean;
   sso_prompt_none_enabled: boolean;
   sso_auto_login_enabled: boolean;
+  sso_idp_logout_enabled: boolean;
   effective_blocked_http_hosts: string[];
   effective_private_ip_ranges: string[];
   blocked_http_hosts_overridden: boolean;
@@ -83,12 +84,14 @@ type IdentitySectionProps = {
   ssoLoginHintEnabled: boolean;
   ssoPromptNoneEnabled: boolean;
   ssoAutoLoginEnabled: boolean;
+  ssoIdpLogoutEnabled: boolean;
   hasChanges: boolean;
   saving: boolean;
   onPasswordLoginChange: (checked: boolean) => void;
   onSSOLoginHintChange: (checked: boolean) => void;
   onSSOPromptNoneChange: (checked: boolean) => void;
   onSSOAutoLoginChange: (checked: boolean) => void;
+  onSSOIdpLogoutChange: (checked: boolean) => void;
   onSave: (deactivateLockedOutAccounts: boolean) => void;
 };
 
@@ -153,6 +156,7 @@ const getDerivedState = (
   ssoLoginHintEnabled: boolean,
   ssoPromptNoneEnabled: boolean,
   ssoAutoLoginEnabled: boolean,
+  ssoIdpLogoutEnabled: boolean,
   form: SMTPFormState,
 ): DerivedState => {
   const hasSMTPSettings = settings?.smtp_enabled ?? false;
@@ -166,7 +170,8 @@ const getDerivedState = (
       (passwordLoginDisabled !== settings.password_login_disabled ||
         ssoLoginHintEnabled !== settings.sso_login_hint_enabled ||
         ssoPromptNoneEnabled !== settings.sso_prompt_none_enabled ||
-        ssoAutoLoginEnabled !== settings.sso_auto_login_enabled),
+        ssoAutoLoginEnabled !== settings.sso_auto_login_enabled ||
+        ssoIdpLogoutEnabled !== settings.sso_idp_logout_enabled),
     hasSMTPChanges:
       settings != null &&
       (form.enabled !== settings.smtp_enabled ||
@@ -328,12 +333,14 @@ const IdentitySection = ({
   ssoLoginHintEnabled,
   ssoPromptNoneEnabled,
   ssoAutoLoginEnabled,
+  ssoIdpLogoutEnabled,
   hasChanges,
   saving,
   onPasswordLoginChange,
   onSSOLoginHintChange,
   onSSOPromptNoneChange,
   onSSOAutoLoginChange,
+  onSSOIdpLogoutChange,
   onSave,
 }: IdentitySectionProps) => {
   const [confirmOpen, setConfirmOpen] = useState(false);
@@ -463,6 +470,24 @@ const IdentitySection = ({
             Enable “Allow silent SSO authentication” above to use automatic sign-in.
           </Text>
         ) : null}
+      </div>
+
+      <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 shadow-sm">
+        <div className="flex items-center justify-between gap-4">
+          <div>
+            <p className="text-sm font-semibold text-gray-900">Sign out of the identity provider too</p>
+            <Text className="mt-1 text-xs text-gray-600">
+              On sign-out, also end the session at the identity provider (RP-initiated OIDC logout). This is a single
+              sign-out: it logs the user out of every application that shares the IdP session, not just this one.
+              Without it, sign-out is local and the user can be signed back in silently while the IdP session lasts.
+            </Text>
+          </div>
+          <Switch
+            data-testid="installation-sso-idp-logout-switch"
+            checked={ssoIdpLogoutEnabled}
+            onCheckedChange={onSSOIdpLogoutChange}
+          />
+        </div>
       </div>
 
       <div className="mt-6 flex flex-wrap items-center gap-3 border-t border-slate-200 pt-6">
@@ -680,6 +705,7 @@ const useInstallationSettingsState = () => {
   const [ssoLoginHintEnabled, setSSOLoginHintEnabled] = useState(false);
   const [ssoPromptNoneEnabled, setSSOPromptNoneEnabled] = useState(false);
   const [ssoAutoLoginEnabled, setSSOAutoLoginEnabled] = useState(false);
+  const [ssoIdpLogoutEnabled, setSSOIdpLogoutEnabled] = useState(false);
   const [savingNetwork, setSavingNetwork] = useState(false);
   const [savingIdentity, setSavingIdentity] = useState(false);
   const [smtpForm, setSMTPForm] = useState<SMTPFormState>(emptySMTPForm);
@@ -692,6 +718,7 @@ const useInstallationSettingsState = () => {
     setSSOLoginHintEnabled(data.sso_login_hint_enabled);
     setSSOPromptNoneEnabled(data.sso_prompt_none_enabled);
     setSSOAutoLoginEnabled(data.sso_auto_login_enabled);
+    setSSOIdpLogoutEnabled(data.sso_idp_logout_enabled);
     setSMTPForm(toSMTPFormState(data));
   }, []);
 
@@ -762,6 +789,7 @@ const useInstallationSettingsState = () => {
           sso_login_hint_enabled: ssoLoginHintEnabled,
           sso_prompt_none_enabled: ssoPromptNoneEnabled,
           sso_auto_login_enabled: ssoAutoLoginEnabled,
+          sso_idp_logout_enabled: ssoIdpLogoutEnabled,
         };
 
         if (deactivateLockedOutAccounts) {
@@ -775,7 +803,14 @@ const useInstallationSettingsState = () => {
         setSavingIdentity(false);
       }
     },
-    [passwordLoginDisabled, ssoLoginHintEnabled, ssoPromptNoneEnabled, ssoAutoLoginEnabled, patchSettings],
+    [
+      passwordLoginDisabled,
+      ssoLoginHintEnabled,
+      ssoPromptNoneEnabled,
+      ssoAutoLoginEnabled,
+      ssoIdpLogoutEnabled,
+      patchSettings,
+    ],
   );
 
   const saveSMTPSettings = useCallback(async () => {
@@ -804,6 +839,7 @@ const useInstallationSettingsState = () => {
     ssoLoginHintEnabled,
     ssoPromptNoneEnabled,
     ssoAutoLoginEnabled,
+    ssoIdpLogoutEnabled,
     savingNetwork,
     savingIdentity,
     smtpForm,
@@ -813,6 +849,7 @@ const useInstallationSettingsState = () => {
     setSSOLoginHintEnabled,
     setSSOPromptNoneEnabled,
     setSSOAutoLoginEnabled,
+    setSSOIdpLogoutEnabled,
     setSMTPField,
     saveNetworkSettings,
     saveIdentitySettings,
@@ -829,6 +866,7 @@ const InstallationSettings: React.FC = () => {
     ssoLoginHintEnabled,
     ssoPromptNoneEnabled,
     ssoAutoLoginEnabled,
+    ssoIdpLogoutEnabled,
     savingNetwork,
     savingIdentity,
     smtpForm,
@@ -838,6 +876,7 @@ const InstallationSettings: React.FC = () => {
     setSSOLoginHintEnabled,
     setSSOPromptNoneEnabled,
     setSSOAutoLoginEnabled,
+    setSSOIdpLogoutEnabled,
     setSMTPField,
     saveNetworkSettings,
     saveIdentitySettings,
@@ -860,6 +899,7 @@ const InstallationSettings: React.FC = () => {
     ssoLoginHintEnabled,
     ssoPromptNoneEnabled,
     ssoAutoLoginEnabled,
+    ssoIdpLogoutEnabled,
     smtpForm,
   );
 
@@ -893,12 +933,14 @@ const InstallationSettings: React.FC = () => {
         ssoLoginHintEnabled={ssoLoginHintEnabled}
         ssoPromptNoneEnabled={ssoPromptNoneEnabled}
         ssoAutoLoginEnabled={ssoAutoLoginEnabled}
+        ssoIdpLogoutEnabled={ssoIdpLogoutEnabled}
         hasChanges={derivedState.hasIdentityChanges}
         saving={savingIdentity}
         onPasswordLoginChange={setPasswordLoginDisabled}
         onSSOLoginHintChange={setSSOLoginHintEnabled}
         onSSOPromptNoneChange={setSSOPromptNoneEnabled}
         onSSOAutoLoginChange={setSSOAutoLoginEnabled}
+        onSSOIdpLogoutChange={setSSOIdpLogoutEnabled}
         onSave={saveIdentitySettings}
       />
 

@@ -88,6 +88,7 @@ func (m *MockOIDCProvider) handleDiscovery(w http.ResponseWriter, _ *http.Reques
 		"authorization_endpoint":                m.Issuer + "/authorize",
 		"token_endpoint":                        m.Issuer + "/token",
 		"jwks_uri":                              m.Issuer + "/jwks",
+		"end_session_endpoint":                  m.Issuer + "/logout",
 		"response_types_supported":              []string{"code"},
 		"subject_types_supported":               []string{"public"},
 		"id_token_signing_alg_values_supported": []string{"RS256"},

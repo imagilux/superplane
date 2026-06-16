@@ -48,6 +48,7 @@ type installationSettingsResponse struct {
 	SSOLoginHintEnabled         bool               `json:"sso_login_hint_enabled"`
 	SSOPromptNoneEnabled        bool               `json:"sso_prompt_none_enabled"`
 	SSOAutoLoginEnabled         bool               `json:"sso_auto_login_enabled"`
+	SSOIdPLogoutEnabled         bool               `json:"sso_idp_logout_enabled"`
 	EffectiveBlockedHTTPHosts   []string           `json:"effective_blocked_http_hosts"`
 	EffectivePrivateIPRanges    []string           `json:"effective_private_ip_ranges"`
 	BlockedHTTPHostsOverridden  bool               `json:"blocked_http_hosts_overridden"`
@@ -69,6 +70,7 @@ type installationSettingsRequest struct {
 	SSOLoginHintEnabled         *bool   `json:"sso_login_hint_enabled"`
 	SSOPromptNoneEnabled        *bool   `json:"sso_prompt_none_enabled"`
 	SSOAutoLoginEnabled         *bool   `json:"sso_auto_login_enabled"`
+	SSOIdPLogoutEnabled         *bool   `json:"sso_idp_logout_enabled"`
 	SMTPEnabled                 *bool   `json:"smtp_enabled"`
 	SMTPHost                    *string `json:"smtp_host"`
 	SMTPPort                    *int    `json:"smtp_port"`
@@ -237,7 +239,8 @@ func (s *Server) updateInstallationSettings(ctx context.Context, req installatio
 
 	return database.Conn().Transaction(func(tx *gorm.DB) error {
 		if req.AllowPrivateNetworkAccess != nil || req.PasswordLoginDisabled != nil ||
-			req.SSOLoginHintEnabled != nil || req.SSOPromptNoneEnabled != nil || req.SSOAutoLoginEnabled != nil {
+			req.SSOLoginHintEnabled != nil || req.SSOPromptNoneEnabled != nil || req.SSOAutoLoginEnabled != nil ||
+			req.SSOIdPLogoutEnabled != nil {
 			metadata, err := models.GetInstallationMetadataInTransaction(tx)
 			if err != nil {
 				return err
@@ -257,6 +260,9 @@ func (s *Server) updateInstallationSettings(ctx context.Context, req installatio
 			}
 			if req.SSOAutoLoginEnabled != nil {
 				metadata.SSOAutoLoginEnabled = *req.SSOAutoLoginEnabled
+			}
+			if req.SSOIdPLogoutEnabled != nil {
+				metadata.SSOIdPLogoutEnabled = *req.SSOIdPLogoutEnabled
 			}
 			metadata.UpdatedAt = time.Now()
 
@@ -297,6 +303,7 @@ func (s *Server) buildInstallationSettingsResponse(account *models.Account) (ins
 		SSOLoginHintEnabled:         metadata.SSOLoginHintEnabled,
 		SSOPromptNoneEnabled:        metadata.SSOPromptNoneEnabled,
 		SSOAutoLoginEnabled:         metadata.SSOAutoLoginEnabled,
+		SSOIdPLogoutEnabled:         metadata.SSOIdPLogoutEnabled,
 		EffectiveBlockedHTTPHosts:   policy.BlockedHosts,
 		EffectivePrivateIPRanges:    policy.PrivateIPRanges,
 		BlockedHTTPHostsOverridden:  policy.BlockedHostsOverridden,

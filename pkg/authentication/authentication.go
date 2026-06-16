@@ -326,7 +326,16 @@ func (a *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 	ClearAccountCookie(w, r)
 
-	http.Redirect(w, r, "/login", http.StatusTemporaryRedirect)
+	// Land on the login page with logged_out=1 so the page does not immediately
+	// auto-login the user back in (the auto-login effect skips this marker). When
+	// the installation opts into IdP logout, redirect through the IdP's
+	// end-session endpoint instead, which then returns to the same landing.
+	target := "/login?logged_out=1"
+	if idpURL := a.idpLogoutURL(r); idpURL != "" {
+		target = idpURL
+	}
+
+	http.Redirect(w, r, target, http.StatusTemporaryRedirect)
 }
 
 func (a *Handler) handleAuthConfig(w http.ResponseWriter, r *http.Request) {
