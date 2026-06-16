@@ -446,6 +446,7 @@ func (s *Server) adminListAccounts(w http.ResponseWriter, r *http.Request) {
 		Name              string  `json:"name"`
 		Email             string  `json:"email"`
 		InstallationAdmin bool    `json:"installation_admin"`
+		Deactivated       bool    `json:"deactivated"`
 		CreatedAt         *string `json:"created_at,omitempty"`
 	}
 
@@ -456,6 +457,7 @@ func (s *Server) adminListAccounts(w http.ResponseWriter, r *http.Request) {
 			Name:              a.Name,
 			Email:             a.Email,
 			InstallationAdmin: a.IsInstallationAdmin(),
+			Deactivated:       a.IsDeactivated(),
 		}
 
 		if a.CreatedAt != nil {
@@ -841,6 +843,83 @@ func (s *Server) demoteAdmin(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "demoted"})
+}
+
+// deactivateAccount disables an account (reversible). A deactivated account is
+// then rejected at login and on every authenticated request.
+func (s *Server) deactivateAccount(w http.ResponseWriter, r *http.Request) {
+	admin, ok := middleware.GetAccountFromContext(r.Context())
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	targetID := mux.Vars(r)["accountId"]
+
+	// Prevent self-deactivation — an admin must not lock themselves out.
+	if admin.ID.String() == targetID {
+		http.Error(w, "Cannot deactivate yourself", http.StatusBadRequest)
+		return
+	}
+
+	target, err := models.FindAccountByID(targetID)
+	if err != nil {
+		http.Error(w, "Account not found", http.StatusNotFound)
+		return
+	}
+
+	if err := models.Deactivate(targetID, time.Now()); err != nil {
+		log.Errorf("admin: failed to deactivate %s: %v", targetID, err)
+		http.Error(w, "Failed to deactivate account", http.StatusInternalServerError)
+		return
+	}
+
+	log.WithFields(log.Fields{
+		"admin_account_id":  admin.ID.String(),
+		"admin_email":       admin.Email,
+		"target_account_id": target.ID.String(),
+		"target_email":      target.Email,
+		"action":            "deactivate_account",
+		"client_ip":         r.RemoteAddr,
+	}).Info("account deactivated")
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "deactivated"})
+}
+
+// reactivateAccount re-enables a previously deactivated account.
+func (s *Server) reactivateAccount(w http.ResponseWriter, r *http.Request) {
+	admin, ok := middleware.GetAccountFromContext(r.Context())
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	targetID := mux.Vars(r)["accountId"]
+
+	target, err := models.FindAccountByID(targetID)
+	if err != nil {
+		http.Error(w, "Account not found", http.StatusNotFound)
+		return
+	}
+
+	if err := models.Reactivate(targetID); err != nil {
+		log.Errorf("admin: failed to reactivate %s: %v", targetID, err)
+		http.Error(w, "Failed to reactivate account", http.StatusInternalServerError)
+		return
+	}
+
+	log.WithFields(log.Fields{
+		"admin_account_id":  admin.ID.String(),
+		"admin_email":       admin.Email,
+		"target_account_id": target.ID.String(),
+		"target_email":      target.Email,
+		"action":            "reactivate_account",
+		"client_ip":         r.RemoteAddr,
+	}).Info("account reactivated")
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "reactivated"})
 }
 
 // adminEnableOrgExperimentalFeature toggles an experimental feature on for

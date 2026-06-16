@@ -21,6 +21,27 @@ export async function toggleAdmin(acc: AdminAccount, onDone: () => void) {
   }
 }
 
+interface DeactivatableAccount {
+  id: string;
+  name: string;
+  deactivated: boolean;
+}
+
+export async function toggleActivation(acc: DeactivatableAccount, onDone: () => void) {
+  const action = acc.deactivated ? "reactivate" : "deactivate";
+  try {
+    const res = await fetch(`/admin/api/accounts/${acc.id}/${action}`, { method: "POST", credentials: "include" });
+    if (!res.ok) {
+      showErrorToast((await res.text()) || `Failed to ${action}`);
+      return;
+    }
+    showSuccessToast(acc.deactivated ? `${acc.name} reactivated` : `${acc.name} deactivated`);
+    onDone();
+  } catch {
+    showErrorToast(`Failed to ${action}`);
+  }
+}
+
 export async function startImpersonation(accountId: string) {
   try {
     const res = await fetch("/admin/api/impersonate/start", {

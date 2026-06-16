@@ -486,6 +486,71 @@ func TestDeactivatedAccountSessionRejected(t *testing.T) {
 	assert.Contains(t, []int{http.StatusUnauthorized, http.StatusTemporaryRedirect}, resp.Code)
 }
 
+func TestAdminDeactivateReactivateAccount(t *testing.T) {
+	server, r, token := setupAdminTestServer(t)
+
+	target, err := models.CreateAccount("Target", "target@example.com")
+	require.NoError(t, err)
+
+	post := func(path string) *httptest.ResponseRecorder {
+		return execRequest(server, requestParams{method: "POST", path: path, authCookie: token})
+	}
+	listedAsDeactivated := func(id string) bool {
+		resp := execRequest(server, requestParams{method: "GET", path: "/admin/api/accounts", authCookie: token})
+		require.Equal(t, http.StatusOK, resp.Code)
+		var page struct {
+			Items []map[string]any `json:"items"`
+		}
+		require.NoError(t, json.Unmarshal(resp.Body.Bytes(), &page))
+		for _, a := range page.Items {
+			if a["id"] == id {
+				return a["deactivated"] == true
+			}
+		}
+		return false
+	}
+
+	t.Run("deactivate sets the state and the list reflects it", func(t *testing.T) {
+		resp := post("/admin/api/accounts/" + target.ID.String() + "/deactivate")
+		assert.Equal(t, http.StatusOK, resp.Code)
+
+		fresh, err := models.FindAccountByID(target.ID.String())
+		require.NoError(t, err)
+		assert.True(t, fresh.IsDeactivated())
+		assert.True(t, listedAsDeactivated(target.ID.String()))
+	})
+
+	t.Run("reactivate clears the state", func(t *testing.T) {
+		resp := post("/admin/api/accounts/" + target.ID.String() + "/reactivate")
+		assert.Equal(t, http.StatusOK, resp.Code)
+
+		fresh, err := models.FindAccountByID(target.ID.String())
+		require.NoError(t, err)
+		assert.False(t, fresh.IsDeactivated())
+		assert.False(t, listedAsDeactivated(target.ID.String()))
+	})
+
+	t.Run("cannot deactivate yourself", func(t *testing.T) {
+		resp := post("/admin/api/accounts/" + r.Account.ID.String() + "/deactivate")
+		assert.Equal(t, http.StatusBadRequest, resp.Code)
+	})
+
+	t.Run("non-admin is rejected", func(t *testing.T) {
+		account, err := models.CreateAccount("Regular", "regular-deact@example.com")
+		require.NoError(t, err)
+		signer := jwt.NewSigner("test-client-secret")
+		regularToken, err := authentication.GenerateAccountToken(signer, account.ID.String(), time.Now(), time.Hour)
+		require.NoError(t, err)
+
+		resp := execRequest(server, requestParams{
+			method:     "POST",
+			path:       "/admin/api/accounts/" + target.ID.String() + "/deactivate",
+			authCookie: regularToken,
+		})
+		assert.Equal(t, http.StatusNotFound, resp.Code)
+	})
+}
+
 func unsetEnvForAdminTest(t *testing.T, key string) {
 	t.Helper()
 
