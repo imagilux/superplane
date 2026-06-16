@@ -30,6 +30,7 @@ import (
 	"github.com/superplanehq/superplane/pkg/models"
 	"github.com/superplanehq/superplane/pkg/utils"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const SignupDisabledError = "signup is currently disabled"
@@ -1002,42 +1003,35 @@ func updateAccountProviders(encryptor crypto.Encryptor, account *models.Account,
 		return err
 	}
 
-	accountProvider, err := account.FindAccountProviderByID(gothUser.Provider, gothUser.UserID)
-
-	//
-	// If we already have an account provider for this provider and provider ID, we just update it.
-	//
-	if err == nil {
-		accountProvider.AccessToken = base64.StdEncoding.EncodeToString(accessToken)
-		accountProvider.Username = gothUser.NickName
-		accountProvider.Email = utils.NormalizeEmail(gothUser.Email)
-		accountProvider.Name = gothUser.Name
-		accountProvider.AvatarURL = gothUser.AvatarURL
-		accountProvider.RefreshToken = gothUser.RefreshToken
-		if !gothUser.ExpiresAt.IsZero() {
-			accountProvider.TokenExpiresAt = &gothUser.ExpiresAt
-		}
-
-		return database.Conn().Save(accountProvider).Error
+	accountProvider := &models.AccountProvider{
+		AccountID:    account.ID,
+		Provider:     gothUser.Provider,
+		ProviderID:   gothUser.UserID,
+		Username:     gothUser.NickName,
+		Email:        utils.NormalizeEmail(gothUser.Email),
+		Name:         gothUser.Name,
+		AvatarURL:    gothUser.AvatarURL,
+		AccessToken:  base64.StdEncoding.EncodeToString(accessToken),
+		RefreshToken: gothUser.RefreshToken,
+	}
+	if !gothUser.ExpiresAt.IsZero() {
+		accountProvider.TokenExpiresAt = &gothUser.ExpiresAt
 	}
 
 	//
-	// Otherwise, we create a new account provider.
+	// Upsert keyed on the (account_id, provider) unique constraint: an account has
+	// at most one link per provider, so a re-login refreshes that row in place,
+	// including provider_id -- which changes when a provider is re-pointed to a
+	// different IdP, or the IdP rotates the subject. A plain insert there would
+	// violate account_providers_account_id_provider_key.
 	//
-	accountProvider = &models.AccountProvider{
-		AccountID:      account.ID,
-		Provider:       gothUser.Provider,
-		ProviderID:     gothUser.UserID,
-		Username:       gothUser.NickName,
-		Email:          utils.NormalizeEmail(gothUser.Email),
-		Name:           gothUser.Name,
-		AvatarURL:      gothUser.AvatarURL,
-		AccessToken:    base64.StdEncoding.EncodeToString(accessToken),
-		RefreshToken:   gothUser.RefreshToken,
-		TokenExpiresAt: &gothUser.ExpiresAt,
-	}
-
-	return database.Conn().Create(accountProvider).Error
+	return database.Conn().Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "account_id"}, {Name: "provider"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"provider_id", "username", "email", "name", "avatar_url",
+			"access_token", "refresh_token", "token_expires_at", "updated_at",
+		}),
+	}).Create(accountProvider).Error
 }
 
 func getRedirectURL(r *http.Request) string {

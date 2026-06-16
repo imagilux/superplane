@@ -271,6 +271,38 @@ func TestLogout(t *testing.T) {
 	})
 }
 
+// A second login through the same provider with a DIFFERENT subject (e.g. the
+// provider was re-pointed to another IdP, or the IdP rotated the sub) must
+// upsert the existing (account_id, provider) link, not insert a duplicate.
+func TestSSOFlow_SubjectChangeUpserts(t *testing.T) {
+	h, _, mock, orgID, slug, provider := setupSSO(t)
+	providerKey := models.ProviderOIDCPrefix + provider.ID.String()
+
+	// First login: subject sub-old.
+	s1, n1, c1 := doSSOLogin(t, h, orgID, slug, "/")
+	mock.RegisterCode("code-old", support.MockIDClaims{Sub: "sub-old", Email: "rp@example.com", Name: "RP", Nonce: n1, EmailVerified: true})
+	rec1 := doSSOCallback(h, orgID, slug, "code-old", s1, c1)
+	require.NotContains(t, rec1.Header().Get("Location"), "sso_error")
+
+	account, err := models.FindAccountByEmail("rp@example.com")
+	require.NoError(t, err)
+	ap, err := account.FindAccountProviderByID(providerKey, "sub-old")
+	require.NoError(t, err)
+	assert.Equal(t, "sub-old", ap.ProviderID)
+
+	// Second login: same provider + email, different subject.
+	s2, n2, c2 := doSSOLogin(t, h, orgID, slug, "/")
+	mock.RegisterCode("code-new", support.MockIDClaims{Sub: "sub-new", Email: "rp@example.com", Name: "RP", Nonce: n2, EmailVerified: true})
+	rec2 := doSSOCallback(h, orgID, slug, "code-new", s2, c2)
+	require.NotContains(t, rec2.Header().Get("Location"), "sso_error", "changed subject must upsert, not error")
+	assert.True(t, hasCookie(rec2, "account_token"))
+
+	// The single link now carries the new subject.
+	ap2, err := account.FindAccountProviderByID(providerKey, "sub-new")
+	require.NoError(t, err)
+	assert.Equal(t, "sub-new", ap2.ProviderID)
+}
+
 func TestSSOFlow_DomainGateRejectsDisallowedEmail(t *testing.T) {
 	h, _, mock, orgID, slug, _ := setupSSO(t)
 
