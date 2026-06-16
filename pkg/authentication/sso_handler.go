@@ -2,13 +2,13 @@ package authentication
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/google/uuid"
 	"github.com/gorilla/mux"
 	"github.com/markbates/goth"
@@ -48,24 +48,13 @@ func emailDomain(email string) string {
 	return strings.ToLower(email[at+1:])
 }
 
-// providerConfig loads an enabled OIDC provider and turns it into an sso.Config
-// (decrypting the client secret). Returns ok=false if the provider is missing,
-// disabled, or not an OIDC provider.
-func (a *Handler) providerConfig(r *http.Request, orgID, slug string) (*models.OrganizationOIDCProvider, sso.Config, bool) {
-	orgUUID, err := uuid.Parse(orgID)
-	if err != nil {
-		return nil, sso.Config{}, false
-	}
-
-	provider, err := models.FindOIDCProviderBySlug(orgUUID, slug)
-	if err != nil || !provider.Enabled || provider.Type != models.OIDCProviderTypeOIDC {
-		return nil, sso.Config{}, false
-	}
-
+// oidcConfig turns an OIDC provider into an sso.Config — decrypting the client
+// secret and adding the `groups` scope when group features are configured.
+func (a *Handler) oidcConfig(r *http.Request, provider *models.OrganizationOIDCProvider, orgID, slug string) (sso.Config, bool) {
 	secret, err := provider.DecryptClientSecret(r.Context(), a.encryptor)
 	if err != nil {
 		log.Errorf("Failed to decrypt client secret for OIDC provider %s: %v", provider.ID, err)
-		return nil, sso.Config{}, false
+		return sso.Config{}, false
 	}
 
 	scopes := []string(provider.Scopes)
@@ -73,15 +62,43 @@ func (a *Handler) providerConfig(r *http.Request, orgID, slug string) (*models.O
 		scopes = ensureScope(scopes, "groups")
 	}
 
-	cfg := sso.Config{
+	return sso.Config{
 		ID:           provider.ID.String(),
 		IssuerURL:    provider.IssuerURL,
 		ClientID:     provider.ClientID,
 		ClientSecret: secret,
 		RedirectURL:  ssoCallbackURL(orgID, slug),
 		Scopes:       scopes,
+	}, true
+}
+
+// authenticatorFor loads an enabled provider and returns an Authenticator for
+// it, dispatching on the provider type. This is the seam where additional
+// provider types (e.g. SAML) plug in — each type builds its own config and
+// Authenticator implementation. Returns ok=false if the provider is missing,
+// disabled, or of an unimplemented type.
+func (a *Handler) authenticatorFor(r *http.Request, orgID, slug string) (*models.OrganizationOIDCProvider, sso.Authenticator, bool) {
+	orgUUID, err := uuid.Parse(orgID)
+	if err != nil {
+		return nil, nil, false
 	}
-	return provider, cfg, true
+
+	provider, err := models.FindOIDCProviderBySlug(orgUUID, slug)
+	if err != nil || !provider.Enabled {
+		return nil, nil, false
+	}
+
+	switch provider.Type {
+	case models.OIDCProviderTypeOIDC:
+		cfg, ok := a.oidcConfig(r, provider, orgID, slug)
+		if !ok {
+			return nil, nil, false
+		}
+		return provider, a.ssoRegistry.Authenticator(cfg), true
+	default:
+		log.Warnf("SSO requested for unimplemented provider type %q (provider %s)", provider.Type, provider.ID)
+		return nil, nil, false
+	}
 }
 
 // handleSSOLogin starts the OIDC authorization-code flow for an organization's
@@ -91,16 +108,9 @@ func (a *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 	orgID := vars["orgId"]
 	slug := vars["providerSlug"]
 
-	_, cfg, ok := a.providerConfig(r, orgID, slug)
+	provider, authr, ok := a.authenticatorFor(r, orgID, slug)
 	if !ok {
 		ssoRedirectError(w, r, "provider_not_found")
-		return
-	}
-
-	oauthConfig, _, err := a.ssoRegistry.Get(r.Context(), cfg)
-	if err != nil {
-		log.Errorf("OIDC discovery failed for org %s provider %s: %v", orgID, slug, err)
-		ssoRedirectError(w, r, "provider_unavailable")
 		return
 	}
 
@@ -115,10 +125,17 @@ func (a *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	authURL, err := authr.AuthCodeURL(r.Context(), state, nonce)
+	if err != nil {
+		log.Errorf("OIDC discovery failed for org %s provider %s: %v", orgID, slug, err)
+		ssoRedirectError(w, r, "provider_unavailable")
+		return
+	}
+
 	if err := sso.SetStateCookie(w, r, a.jwtSigner, sso.State{
 		State:        state,
 		Nonce:        nonce,
-		ProviderID:   cfg.ID,
+		ProviderID:   provider.ID.String(),
 		OrgID:        orgID,
 		ProviderSlug: slug,
 		Redirect:     getRedirectURL(r),
@@ -127,7 +144,7 @@ func (a *Handler) handleSSOLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	http.Redirect(w, r, oauthConfig.AuthCodeURL(state, oidc.Nonce(nonce)), http.StatusTemporaryRedirect)
+	http.Redirect(w, r, authURL, http.StatusTemporaryRedirect)
 }
 
 // handleSSOCallback completes the flow: GET /auth/sso/{orgId}/{providerSlug}/callback
@@ -150,17 +167,9 @@ func (a *Handler) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	provider, cfg, ok := a.providerConfig(r, orgID, slug)
+	provider, authr, ok := a.authenticatorFor(r, orgID, slug)
 	if !ok {
 		ssoRedirectError(w, r, "provider_not_found")
-		return
-	}
-
-	ctx := a.ssoRegistry.ClientContext(r.Context())
-	oauthConfig, verifier, err := a.ssoRegistry.Get(ctx, cfg)
-	if err != nil {
-		log.Errorf("OIDC discovery failed on callback for org %s provider %s: %v", orgID, slug, err)
-		ssoRedirectError(w, r, "provider_unavailable")
 		return
 	}
 
@@ -170,43 +179,12 @@ func (a *Handler) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	oauthToken, err := oauthConfig.Exchange(ctx, code)
+	// Exchange the code and verify the identity (ID token + nonce). Verification
+	// lives in the Authenticator; provisioning policy stays here in the handler.
+	result, err := authr.Complete(r.Context(), code, st.Nonce)
 	if err != nil {
-		log.Errorf("OIDC token exchange failed for org %s provider %s: %v", orgID, slug, err)
-		ssoRedirectError(w, r, "exchange_failed")
-		return
-	}
-
-	rawIDToken, ok := oauthToken.Extra("id_token").(string)
-	if !ok || rawIDToken == "" {
-		ssoRedirectError(w, r, "no_id_token")
-		return
-	}
-
-	idToken, err := verifier.Verify(ctx, rawIDToken)
-	if err != nil {
-		log.Errorf("OIDC ID token verification failed for org %s provider %s: %v", orgID, slug, err)
-		ssoRedirectError(w, r, "invalid_id_token")
-		return
-	}
-
-	// Replay protection: the nonce embedded in the ID token must match the one we
-	// generated and stored in the signed state cookie.
-	if idToken.Nonce != st.Nonce {
-		ssoRedirectError(w, r, "invalid_nonce")
-		return
-	}
-
-	var claims struct {
-		Email             string   `json:"email"`
-		EmailVerified     bool     `json:"email_verified"`
-		Name              string   `json:"name"`
-		PreferredUsername string   `json:"preferred_username"`
-		Picture           string   `json:"picture"`
-		Groups            []string `json:"groups"`
-	}
-	if err := idToken.Claims(&claims); err != nil || claims.Email == "" {
-		ssoRedirectError(w, r, "missing_email_claim")
+		log.Errorf("SSO completion failed for org %s provider %s: %v", orgID, slug, err)
+		ssoRedirectError(w, r, completeErrorReason(err))
 		return
 	}
 
@@ -214,40 +192,40 @@ func (a *Handler) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 	// domain gate all key on the email, so an unverified email is an account
 	// takeover vector. Reject before any lookup/creation/linking. (Standard IdPs
 	// such as Authelia, Keycloak, and Okta emit email_verified.)
-	if !claims.EmailVerified {
+	if !result.EmailVerified {
 		ssoRedirectError(w, r, "email_not_verified")
 		return
 	}
 
 	// Domain gate: when the provider restricts domains, the email must match.
-	if !provider.AllowsEmailDomain(emailDomain(claims.Email)) {
+	if !provider.AllowsEmailDomain(emailDomain(result.Email)) {
 		ssoRedirectError(w, r, "domain_not_allowed")
 		return
 	}
 
 	// Group gate: when the provider restricts groups, the user's IdP groups must
 	// include at least one allowed group.
-	if !provider.AllowsGroups(claims.Groups) {
+	if !provider.AllowsGroups(result.Groups) {
 		ssoRedirectError(w, r, "group_not_allowed")
 		return
 	}
 
 	gothUser := goth.User{
 		Provider:     models.ProviderOIDCPrefix + provider.ID.String(),
-		UserID:       idToken.Subject,
-		Email:        claims.Email,
-		Name:         claims.Name,
-		NickName:     claims.PreferredUsername,
-		AvatarURL:    claims.Picture,
-		AccessToken:  oauthToken.AccessToken,
-		RefreshToken: oauthToken.RefreshToken,
-		ExpiresAt:    oauthToken.Expiry,
+		UserID:       result.Subject,
+		Email:        result.Email,
+		Name:         result.Name,
+		NickName:     result.Username,
+		AvatarURL:    result.AvatarURL,
+		AccessToken:  result.AccessToken,
+		RefreshToken: result.RefreshToken,
+		ExpiresAt:    result.ExpiresAt,
 	}
 
 	// A domain- or group-restricted match authorizes just-in-time provisioning;
 	// otherwise fall back to the normal signup gate (invite / blockSignup).
-	allowSignup := (len(provider.AllowedEmailDomains) > 0 && provider.AllowsEmailDomain(emailDomain(claims.Email))) ||
-		(len(provider.AllowedGroups) > 0 && provider.AllowsGroups(claims.Groups))
+	allowSignup := (len(provider.AllowedEmailDomains) > 0 && provider.AllowsEmailDomain(emailDomain(result.Email))) ||
+		(len(provider.AllowedGroups) > 0 && provider.AllowsGroups(result.Groups))
 
 	account, err := a.findOrCreateAccountForProvider(gothUser, allowSignup)
 	if err != nil {
@@ -255,18 +233,18 @@ func (a *Handler) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 			ssoRedirectError(w, r, "signup_disabled")
 			return
 		}
-		log.Errorf("Error finding/creating account for SSO login %s: %v", claims.Email, err)
+		log.Errorf("Error finding/creating account for SSO login %s: %v", result.Email, err)
 		ssoRedirectError(w, r, "internal_error")
 		return
 	}
 
 	if err := updateAccountProviders(a.encryptor, account, gothUser); err != nil {
-		log.Errorf("Error updating account provider for SSO login %s: %v", claims.Email, err)
+		log.Errorf("Error updating account provider for SSO login %s: %v", result.Email, err)
 		ssoRedirectError(w, r, "internal_error")
 		return
 	}
 
-	desiredRole := provider.ResolveRole(claims.Groups)
+	desiredRole := provider.ResolveRole(result.Groups)
 	if desiredRole == "" {
 		desiredRole = models.RoleOrgViewer
 	}
@@ -276,13 +254,13 @@ func (a *Handler) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 
 	orgUUID, _ := uuid.Parse(orgID)
 	if err := a.ensureOrgMembership(orgUUID, account, desiredRole, syncRole); err != nil {
-		log.Errorf("Error provisioning org membership for SSO login %s: %v", claims.Email, err)
+		log.Errorf("Error provisioning org membership for SSO login %s: %v", result.Email, err)
 		ssoRedirectError(w, r, "internal_error")
 		return
 	}
 
 	if err := a.acceptPendingInvitations(account); err != nil {
-		log.Errorf("Error accepting pending invitations for SSO login %s: %v", claims.Email, err)
+		log.Errorf("Error accepting pending invitations for SSO login %s: %v", result.Email, err)
 		ssoRedirectError(w, r, "internal_error")
 		return
 	}
@@ -297,6 +275,19 @@ func (a *Handler) handleSSOCallback(w http.ResponseWriter, r *http.Request) {
 		redirect = "/"
 	}
 	http.Redirect(w, r, redirect, http.StatusTemporaryRedirect)
+}
+
+// completeErrorReason maps an Authenticator.Complete failure to a stable,
+// user-facing sso_error reason (the detail is logged separately).
+func completeErrorReason(err error) string {
+	switch {
+	case errors.Is(err, sso.ErrNonceMismatch):
+		return "invalid_nonce"
+	case errors.Is(err, sso.ErrMissingEmail):
+		return "missing_email_claim"
+	default:
+		return "invalid_id_token"
+	}
 }
 
 // ensureOrgMembership performs just-in-time provisioning: if the account is not
