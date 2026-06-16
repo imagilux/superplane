@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import superplaneLogo from "@/assets/superplane.svg";
 import { Button } from "@/components/ui/button";
@@ -20,6 +20,8 @@ type AuthConfig = {
   ssoEnabled: boolean;
   ssoLoginHintEnabled: boolean;
   ssoPromptNoneEnabled: boolean;
+  ssoAutoLoginEnabled: boolean;
+  ssoAutoLoginUrl: string;
 };
 
 type SsoProviderOption = {
@@ -94,6 +96,8 @@ export const Login: React.FC = () => {
     ssoEnabled: false,
     ssoLoginHintEnabled: false,
     ssoPromptNoneEnabled: false,
+    ssoAutoLoginEnabled: false,
+    ssoAutoLoginUrl: "",
   });
   const [configLoading, setConfigLoading] = useState(true);
   const [configError, setConfigError] = useState<string | null>(null);
@@ -233,6 +237,8 @@ export const Login: React.FC = () => {
             ssoEnabled: Boolean(data.ssoEnabled),
             ssoLoginHintEnabled: Boolean(data.ssoLoginHintEnabled),
             ssoPromptNoneEnabled: Boolean(data.ssoPromptNoneEnabled),
+            ssoAutoLoginEnabled: Boolean(data.ssoAutoLoginEnabled),
+            ssoAutoLoginUrl: typeof data.ssoAutoLoginUrl === "string" ? data.ssoAutoLoginUrl : "",
           });
         }
       } catch {
@@ -279,6 +285,39 @@ export const Login: React.FC = () => {
       setShowSsoForm(true);
     }
   }, [ssoOnly]);
+
+  // Unattended SSO auto-login: when the installation enables it (and /auth/config
+  // exposes a sole-provider URL), silently attempt SSO on a clean login visit so
+  // a user with a live IdP session never sees a login screen. Guards: one-shot
+  // per mount; skip when a prior silent attempt failed (?sso_error -> no loop),
+  // when already authenticated or still loading, or in an invite / magic-link /
+  // signup flow (each handled elsewhere).
+  const autoLoginAttempted = useRef(false);
+  useEffect(() => {
+    if (autoLoginAttempted.current) return;
+    if (!authConfig.ssoAutoLoginUrl) return;
+    if (searchParams.get("sso_error") || searchParams.get("error")) return;
+    if (accountLoading || account) return;
+    if (inviteToken || magicLinkToken || isSignupMode) return;
+
+    autoLoginAttempted.current = true;
+    const params = new URLSearchParams();
+    params.set("prompt", "none");
+    if (safeRedirect) {
+      params.set("redirect", safeRedirect);
+    }
+    const sep = authConfig.ssoAutoLoginUrl.includes("?") ? "&" : "?";
+    window.location.href = `${authConfig.ssoAutoLoginUrl}${sep}${params.toString()}`;
+  }, [
+    authConfig.ssoAutoLoginUrl,
+    account,
+    accountLoading,
+    inviteToken,
+    magicLinkToken,
+    isSignupMode,
+    safeRedirect,
+    searchParams,
+  ]);
 
   useEffect(() => {
     if (!canSignup && isSignupMode) {

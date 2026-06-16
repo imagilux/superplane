@@ -2,6 +2,7 @@ package authentication
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -185,6 +186,55 @@ func TestSSOCallback_SilentAuthErrorMapsToInteractionRequired(t *testing.T) {
 	require.Equal(t, http.StatusTemporaryRedirect, rec.Code)
 	assert.Contains(t, rec.Header().Get("Location"), "sso_error=interaction_required")
 	assert.False(t, hasCookie(rec, "account_token"), "no session should be issued on a silent-auth failure")
+}
+
+func TestAuthConfig_SSOAutoLoginURL(t *testing.T) {
+	h, r, _, orgID, slug, _ := setupSSO(t)
+
+	authConfig := func(t *testing.T) map[string]any {
+		req := httptest.NewRequest("GET", "/auth/config", nil)
+		rec := httptest.NewRecorder()
+		h.handleAuthConfig(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code)
+		var out map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+		return out
+	}
+
+	setOpts := func(promptNone, autoLogin bool) {
+		require.NoError(t, models.UpdateInstallationMetadata(&models.InstallationMetadata{
+			SSOPromptNoneEnabled: promptNone,
+			SSOAutoLoginEnabled:  autoLogin,
+			UpdatedAt:            time.Now(),
+		}))
+	}
+
+	wantURL := "/auth/sso/" + orgID + "/" + slug
+
+	t.Run("exposed when enabled, prompt=none on, and a sole provider", func(t *testing.T) {
+		setOpts(true, true)
+		out := authConfig(t)
+		assert.Equal(t, true, out["ssoAutoLoginEnabled"])
+		assert.Equal(t, wantURL, out["ssoAutoLoginUrl"])
+	})
+
+	t.Run("withheld when prompt=none is off", func(t *testing.T) {
+		setOpts(false, true)
+		assert.Equal(t, "", authConfig(t)["ssoAutoLoginUrl"])
+	})
+
+	t.Run("withheld when auto-login is off", func(t *testing.T) {
+		setOpts(true, false)
+		assert.Equal(t, "", authConfig(t)["ssoAutoLoginUrl"])
+	})
+
+	t.Run("withheld when more than one provider is enabled", func(t *testing.T) {
+		setOpts(true, true)
+		second := models.NewOIDCProvider(r.Organization.ID, nil, "idp2", "Second IdP", "", "https://idp2.example.com", "client2", nil, []string{"example.org"}, true)
+		require.NoError(t, second.SetClientSecret(context.Background(), r.Encryptor, "secret2"))
+		require.NoError(t, second.Create())
+		assert.Equal(t, "", authConfig(t)["ssoAutoLoginUrl"], "ambiguous: no auto-login with multiple providers")
+	})
 }
 
 func TestSSOFlow_DomainGateRejectsDisallowedEmail(t *testing.T) {

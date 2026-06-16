@@ -347,9 +347,22 @@ func (a *Handler) handleAuthConfig(w http.ResponseWriter, r *http.Request) {
 	// the silent-login sequence) whether prompt=none is permitted.
 	ssoLoginHintEnabled := false
 	ssoPromptNoneEnabled := false
+	ssoAutoLoginEnabled := false
 	if meta, err := models.GetInstallationMetadata(); err == nil {
 		ssoLoginHintEnabled = meta.SSOLoginHintEnabled
 		ssoPromptNoneEnabled = meta.SSOPromptNoneEnabled
+		ssoAutoLoginEnabled = meta.SSOAutoLoginEnabled
+	}
+
+	// Unattended auto-login needs an unambiguous target: it is offered only when
+	// enabled, prompt=none is permitted, and exactly one SSO provider exists. The
+	// login surface redirects here (with prompt=none) on load; an empty URL means
+	// "do not auto-login".
+	ssoAutoLoginURL := ""
+	if ssoAutoLoginEnabled && ssoPromptNoneEnabled {
+		if p, err := models.SoleEnabledOIDCProvider(); err == nil && p != nil {
+			ssoAutoLoginURL = "/auth/sso/" + p.OrganizationID.String() + "/" + p.Slug
+		}
 	}
 
 	response := struct {
@@ -360,6 +373,8 @@ func (a *Handler) handleAuthConfig(w http.ResponseWriter, r *http.Request) {
 		SSOEnabled           bool     `json:"ssoEnabled"`
 		SSOLoginHintEnabled  bool     `json:"ssoLoginHintEnabled"`
 		SSOPromptNoneEnabled bool     `json:"ssoPromptNoneEnabled"`
+		SSOAutoLoginEnabled  bool     `json:"ssoAutoLoginEnabled"`
+		SSOAutoLoginURL      string   `json:"ssoAutoLoginUrl"`
 	}{
 		Providers:            providerNames,
 		PasswordLoginEnabled: a.effectivePasswordLoginEnabled(),
@@ -368,6 +383,8 @@ func (a *Handler) handleAuthConfig(w http.ResponseWriter, r *http.Request) {
 		SSOEnabled:           ssoEnabled,
 		SSOLoginHintEnabled:  ssoLoginHintEnabled,
 		SSOPromptNoneEnabled: ssoPromptNoneEnabled,
+		SSOAutoLoginEnabled:  ssoAutoLoginEnabled,
+		SSOAutoLoginURL:      ssoAutoLoginURL,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

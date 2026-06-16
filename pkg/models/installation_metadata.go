@@ -19,6 +19,7 @@ type InstallationMetadata struct {
 	PasswordLoginDisabled     bool
 	SSOLoginHintEnabled       bool
 	SSOPromptNoneEnabled      bool
+	SSOAutoLoginEnabled       bool
 	CreatedAt                 time.Time
 	UpdatedAt                 time.Time
 }
@@ -60,6 +61,7 @@ func UpdateInstallationMetadataInTransaction(tx *gorm.DB, metadata *Installation
 			"password_login_disabled":      metadata.PasswordLoginDisabled,
 			"sso_login_hint_enabled":       metadata.SSOLoginHintEnabled,
 			"sso_prompt_none_enabled":      metadata.SSOPromptNoneEnabled,
+			"sso_auto_login_enabled":       metadata.SSOAutoLoginEnabled,
 			"updated_at":                   metadata.UpdatedAt,
 		}).
 		Error

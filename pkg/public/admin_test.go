@@ -346,20 +346,24 @@ func TestAdminInstallationSSOLoginOptions(t *testing.T) {
 		require.NoError(t, json.Unmarshal(response.Body.Bytes(), &result))
 		assert.False(t, result.SSOLoginHintEnabled)
 		assert.False(t, result.SSOPromptNoneEnabled)
+		assert.False(t, result.SSOAutoLoginEnabled)
 	})
 
-	t.Run("enabling both persists to metadata and response", func(t *testing.T) {
+	t.Run("enabling all persists to metadata and response", func(t *testing.T) {
 		result := patch(t, map[string]any{
 			"sso_login_hint_enabled":  true,
 			"sso_prompt_none_enabled": true,
+			"sso_auto_login_enabled":  true,
 		})
 		assert.True(t, result.SSOLoginHintEnabled)
 		assert.True(t, result.SSOPromptNoneEnabled)
+		assert.True(t, result.SSOAutoLoginEnabled)
 
 		metadata, err := models.GetInstallationMetadata()
 		require.NoError(t, err)
 		assert.True(t, metadata.SSOLoginHintEnabled)
 		assert.True(t, metadata.SSOPromptNoneEnabled)
+		assert.True(t, metadata.SSOAutoLoginEnabled)
 	})
 
 	t.Run("a partial update does not clobber the other flag", func(t *testing.T) {

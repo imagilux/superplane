@@ -345,6 +345,26 @@ func ExistsEnabledOIDCProvider() (bool, error) {
 	return count > 0, nil
 }
 
+// SoleEnabledOIDCProvider returns the single enabled OIDC provider when exactly
+// one exists across all organizations, or (nil, nil) otherwise. Unattended
+// auto-login uses it: it only fires when there is one unambiguous provider to
+// target (no discovery email is available on a fresh page load).
+func SoleEnabledOIDCProvider() (*OrganizationOIDCProvider, error) {
+	var providers []OrganizationOIDCProvider
+	err := database.Conn().
+		Where("enabled = ?", true).
+		Limit(2).
+		Find(&providers).
+		Error
+	if err != nil {
+		return nil, err
+	}
+	if len(providers) != 1 {
+		return nil, nil
+	}
+	return &providers[0], nil
+}
+
 // normalizeStrings trims whitespace and drops empty entries (case preserved).
 func normalizeStrings(values []string) []string {
 	out := make([]string, 0, len(values))
