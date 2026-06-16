@@ -907,19 +907,21 @@ export const Login: React.FC = () => {
                     </form>
                   )}
 
-                  <div className="text-center">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowSsoForm(false);
-                        setSsoError(null);
-                        setSsoProviderOptions([]);
-                      }}
-                      className="text-sm text-gray-500 underline underline-offset-2"
-                    >
-                      Back to other sign-in options
-                    </button>
-                  </div>
+                  {!ssoOnly && (
+                    <div className="text-center">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowSsoForm(false);
+                          setSsoError(null);
+                          setSsoProviderOptions([]);
+                        }}
+                        className="text-sm text-gray-500 underline underline-offset-2"
+                      >
+                        Back to other sign-in options
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
