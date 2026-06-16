@@ -5,6 +5,7 @@ package sso
 
 import (
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"net/http"
 	"strings"
@@ -60,7 +61,11 @@ func (r *Registry) ClientContext(ctx context.Context) context.Context {
 }
 
 func cacheKey(c Config) string {
-	return strings.Join([]string{c.ID, c.IssuerURL, c.ClientID, c.RedirectURL}, "|")
+	// Include a fingerprint of the client secret so rotating it (which leaves
+	// issuer/clientID/redirect unchanged) yields a new key — otherwise the stale
+	// secret would be served from cache until the TTL expires.
+	fp := sha256.Sum256([]byte(c.ClientSecret))
+	return strings.Join([]string{c.ID, c.IssuerURL, c.ClientID, c.RedirectURL, fmt.Sprintf("%x", fp[:8])}, "|")
 }
 
 // Get returns a ready oauth2 config and ID-token verifier for the provider,

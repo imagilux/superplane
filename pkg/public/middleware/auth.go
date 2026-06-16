@@ -279,6 +279,18 @@ func authenticateUserByToken(ctx context.Context, r *http.Request, jwtSigner *jw
 		return nil, nil, err
 	}
 
+	// Reject API tokens whose owning account has been deactivated. Service
+	// accounts (no owning account) are unaffected.
+	if user.AccountID != nil {
+		account, err := models.FindAccountByID(user.AccountID.String())
+		if err != nil {
+			return nil, nil, err
+		}
+		if account.IsDeactivated() {
+			return nil, nil, fmt.Errorf("account is deactivated")
+		}
+	}
+
 	return user, nil, nil
 }
 
@@ -307,17 +319,21 @@ func authenticateUserByScopedToken(ctx context.Context, token string, jwtSigner 
 		return nil, nil, err
 	}
 
-	// Reject scoped tokens minted before the owning account's most recent
-	// password change so a password rotation also kills programmatic
-	// credentials issued for that user. Service accounts have no owning
-	// human account, so they're unaffected.
-	if user.AccountID != nil && claims.IssuedAt != nil {
+	// Reject tokens for a deactivated owning account, and tokens minted before
+	// the account's most recent password change (a rotation kills programmatic
+	// credentials too). Service accounts have no owning human account, so
+	// they're unaffected.
+	if user.AccountID != nil {
 		account, err := models.FindAccountByID(user.AccountID.String())
 		if err != nil {
 			return nil, nil, err
 		}
 
-		if !account.IsSessionFresh(claims.IssuedAt.Unix()) {
+		if account.IsDeactivated() {
+			return nil, nil, fmt.Errorf("account is deactivated")
+		}
+
+		if claims.IssuedAt != nil && !account.IsSessionFresh(claims.IssuedAt.Unix()) {
 			return nil, nil, fmt.Errorf("scoped token invalidated by password change")
 		}
 	}

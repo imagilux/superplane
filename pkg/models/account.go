@@ -77,12 +77,23 @@ func Deactivate(accountID string, now time.Time) error {
 
 // DeactivateInTransaction disables the account (reversible; not a delete).
 // Idempotent — re-deactivating an already-disabled account is a no-op and
-// preserves the original timestamp.
+// preserves the original timestamp. It also clears the account's API/scoped
+// token hashes so deactivation invalidates every existing credential
+// immediately, not only on auth paths that check IsDeactivated.
 func DeactivateInTransaction(tx *gorm.DB, accountID string, now time.Time) error {
-	return tx.Model(&Account{}).
+	if err := tx.Model(&Account{}).
 		Where("id = ? AND deactivated_at IS NULL", accountID).
 		Update("deactivated_at", now).
-		Error
+		Error; err != nil {
+		return err
+	}
+
+	id, err := uuid.Parse(accountID)
+	if err != nil {
+		return err
+	}
+
+	return ClearTokenHashesForAccountInTransaction(tx, id)
 }
 
 func Reactivate(accountID string) error {

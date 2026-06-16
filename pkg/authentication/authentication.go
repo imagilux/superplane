@@ -759,6 +759,10 @@ func (a *Handler) checkSignupPolicy(email string, r *http.Request) error {
 func (a *Handler) findOrCreateAccountForMagicCode(email string, r *http.Request) (*models.Account, error) {
 	account, err := models.FindAccountByEmail(email)
 	if err == nil {
+		if account.IsDeactivated() {
+			log.Warnf("Magic-code login attempt for deactivated account: %s", email)
+			return nil, errAccountError
+		}
 		return account, nil
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {

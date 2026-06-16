@@ -4,8 +4,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/superplanehq/superplane/pkg/crypto"
 	"github.com/superplanehq/superplane/pkg/database"
 )
 
@@ -69,4 +71,30 @@ func containsEmail(accounts []Account, email string) bool {
 		}
 	}
 	return false
+}
+
+func TestDeactivateClearsTokens(t *testing.T) {
+	require.NoError(t, database.TruncateTables())
+
+	acc, err := CreateAccount("Tok", "tok@example.com")
+	require.NoError(t, err)
+	org := &Organization{ID: uuid.New(), Name: "Tok Org"}
+	require.NoError(t, database.Conn().Create(org).Error)
+	user, err := CreateUser(org.ID, acc.ID, acc.Email, acc.Name)
+	require.NoError(t, err)
+
+	tokenHash := crypto.HashToken("secret-pat")
+	require.NoError(t, user.UpdateTokenHash(tokenHash))
+
+	// Sanity: the API token resolves the user.
+	found, err := FindActiveUserByTokenHash(tokenHash)
+	require.NoError(t, err)
+	require.Equal(t, user.ID, found.ID)
+
+	// Deactivating the account must invalidate the token — this is the durable
+	// fix that closes the API-token deactivation bypass.
+	require.NoError(t, Deactivate(acc.ID.String(), time.Now()))
+
+	_, err = FindActiveUserByTokenHash(tokenHash)
+	assert.Error(t, err, "API token must no longer resolve a user after the account is deactivated")
 }
