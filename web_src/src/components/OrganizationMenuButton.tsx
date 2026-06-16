@@ -9,6 +9,7 @@ import {
   CircleUser,
   Gauge,
   Key,
+  KeyRound,
   Lock,
   LogOut,
   Menu,
@@ -114,6 +115,12 @@ export function OrganizationMenuButton({ organizationId, className }: Organizati
       href: organizationId ? `/${organizationId}/settings/service-accounts` : "#",
       Icon: Bot,
       permission: { resource: "service_accounts", action: "read" },
+    },
+    {
+      label: "Single Sign-On",
+      href: organizationId ? `/${organizationId}/settings/sso` : "#",
+      Icon: KeyRound,
+      permission: { resource: "oidc_providers", action: "read" },
     },
     {
       label: "Groups",
