@@ -126,16 +126,28 @@ export function createInitialOutcomeState(rubric: {
   title: string;
   criteria: string[];
   categories?: RubricCategory[];
+  maxIterations?: number;
 }): OutcomeState {
   return {
     title: rubric.title,
     criteria: rubric.criteria.map((criterion) => ({ text: criterion })),
     categories: rubric.categories,
     iteration: 1,
-    maxIterations: 3,
+    maxIterations: rubric.maxIterations ?? 3,
     phase: "building",
     log: [{ phase: "building" }],
   };
+}
+
+// parseRubricCriteria turns a free-form rubric (markdown-ish, one criterion per
+// line) into display criteria for the progress widget: leading list markers,
+// numbering, and heading hashes are stripped and blank lines dropped. This is
+// display-only — the raw rubric text is what gets sent to the grader.
+export function parseRubricCriteria(rubric: string): string[] {
+  return rubric
+    .split("\n")
+    .map((line) => line.replace(/^\s*(?:[-*+]|\d+[.)]|#{1,6})\s*/, "").trim())
+    .filter((line) => line.length > 0);
 }
 
 export function isOutcomeActive(outcomeState: OutcomeState | null): boolean {
