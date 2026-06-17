@@ -164,6 +164,15 @@ type ProviderSessionCleaner interface {
 	DeleteSession(ctx context.Context, providerSessionID string) error
 }
 
+// ProviderSessionSummarizer produces a short human-readable title for a
+// session's conversation — e.g. to name an archived session. It is optional:
+// callers must fall back to a heuristic title when a provider does not
+// implement it or the call fails.
+type ProviderSessionSummarizer interface {
+	Name() string
+	SummarizeSession(ctx context.Context, providerSessionID string) (string, error)
+}
+
 var ErrSessionAlreadyTerminated = errors.New("agent session already terminated")
 var ErrSessionBusy = errors.New("agent session is still processing")
 var ErrProviderSessionUnavailable = errors.New("provider session is unavailable")
