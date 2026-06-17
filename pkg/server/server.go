@@ -17,6 +17,7 @@ import (
 	agenttools "github.com/superplanehq/superplane/pkg/agents/agent_tools"
 	"github.com/superplanehq/superplane/pkg/agents/anthropic"
 	"github.com/superplanehq/superplane/pkg/agents/openai"
+	"github.com/superplanehq/superplane/pkg/agents/providerresolver"
 	"github.com/superplanehq/superplane/pkg/authorization"
 	"github.com/superplanehq/superplane/pkg/config"
 	"github.com/superplanehq/superplane/pkg/crypto"
@@ -63,25 +64,47 @@ func getAgentProviderOverride() agents.Provider {
 	return agentProviderOverride.provider
 }
 
-func buildAgentService(authService authorization.Authorization) (agents.Provider, agentsActions.AgentsService) {
+// buildAgentService wires the agent service over a per-organization Resolver.
+// The installation-wide provider (from AGENT_* / ANTHROPIC_* env) becomes the
+// fallback an organization without its own configured provider uses; the
+// resolver layers per-organization providers on top of it.
+//
+// Enablement stays installation-global for now: with no override and no
+// installation provider, agents are disabled installation-wide (a clean "agents
+// not enabled" gRPC response, no stream worker). Lifting that to true
+// per-organization-only enablement is a follow-up tied to the settings UI.
+func buildAgentService(authService authorization.Authorization, encryptor crypto.Encryptor) (agents.Resolver, agentsActions.AgentsService) {
 	if provider := getAgentProviderOverride(); provider != nil {
 		log.WithField("provider", provider.Name()).Info("Managed agents enabled with provider override")
-		return provider, agents.NewService(provider, authService)
+		resolver := agents.StaticResolver(provider)
+		return resolver, agents.NewServiceWithResolver(resolver, authService)
 	}
 
+	fallback := buildInstallationAgentProvider()
+	if fallback == nil {
+		return nil, nil
+	}
+
+	resolver := providerresolver.New(fallback, encryptor, openAIToolDefinitions())
+	return resolver, agents.NewServiceWithResolver(resolver, authService)
+}
+
+// buildInstallationAgentProvider builds the installation-wide agent provider
+// selected by AGENT_PROVIDER, or nil when none is configured.
+func buildInstallationAgentProvider() agents.Provider {
 	switch config.AgentProvider() {
 	case config.ProviderOpenAI:
-		return buildOpenAIAgentService(authService)
+		return buildOpenAIAgentProvider()
 	default:
-		return buildAnthropicAgentService(authService)
+		return buildAnthropicAgentProvider()
 	}
 }
 
-func buildAnthropicAgentService(authService authorization.Authorization) (agents.Provider, agentsActions.AgentsService) {
+func buildAnthropicAgentProvider() agents.Provider {
 	cfg := config.LoadAnthropicAgentConfig()
 	if !cfg.Enabled() {
 		log.Info("Anthropic managed agents disabled: missing ANTHROPIC_* env vars")
-		return nil, nil
+		return nil
 	}
 
 	if err := anthropic.SyncDefaultAgentPrompt(context.Background(), anthropic.Config{
@@ -112,23 +135,22 @@ func buildAnthropicAgentService(authService authorization.Authorization) (agents
 	})
 	if err != nil {
 		log.WithError(err).Warn("failed to initialise Anthropic managed agents provider")
-		return nil, nil
+		return nil
 	}
 
-	service := agents.NewService(provider, authService)
 	log.Info("Anthropic managed agents enabled")
-	return provider, service
+	return provider
 }
 
-// buildOpenAIAgentService wires a generic OpenAI-compatible endpoint (a hosted
-// service or a local vLLM/llama.cpp server) as the agent backend, selected via
-// AGENT_PROVIDER=openai. The provider synthesizes sessions and the agent loop
-// client-side (see pkg/agents/openai).
-func buildOpenAIAgentService(authService authorization.Authorization) (agents.Provider, agentsActions.AgentsService) {
+// buildOpenAIAgentProvider wires a generic OpenAI-compatible endpoint (a hosted
+// service or a local vLLM/llama.cpp server) as the installation-wide agent
+// backend, selected via AGENT_PROVIDER=openai. The provider synthesizes sessions
+// and the agent loop client-side (see pkg/agents/openai).
+func buildOpenAIAgentProvider() agents.Provider {
 	cfg := config.LoadOpenAICompatibleAgentConfig()
 	if !cfg.Enabled() {
 		log.Info("OpenAI-compatible agent provider disabled: set AGENT_BASE_URL and AGENT_MODEL")
-		return nil, nil
+		return nil
 	}
 
 	provider, err := openai.New(openai.Config{
@@ -139,11 +161,11 @@ func buildOpenAIAgentService(authService authorization.Authorization) (agents.Pr
 	})
 	if err != nil {
 		log.WithError(err).Warn("failed to initialise OpenAI-compatible agent provider")
-		return nil, nil
+		return nil
 	}
 
 	log.WithField("model", cfg.Model).Info("OpenAI-compatible agent provider enabled")
-	return provider, agents.NewService(provider, authService)
+	return provider
 }
 
 // openAIToolDefinitions adapts the registered agent tools to the OpenAI
@@ -168,7 +190,7 @@ func startWorkers(
 	gitProvider gitprovider.Provider,
 	baseURL string,
 	authService authorization.Authorization,
-	agentProvider agents.Provider,
+	agentResolver agents.Resolver,
 ) {
 	log.Println("Starting Workers")
 
@@ -247,7 +269,7 @@ func startWorkers(
 	if os.Getenv("START_WORKFLOW_CLEANUP_WORKER") == "yes" || os.Getenv("START_CANVAS_CLEANUP_WORKER") == "yes" {
 		log.Println("Starting Canvas Cleanup Worker")
 
-		w := workers.NewCanvasCleanupWorker(gitProvider, agentProvider)
+		w := workers.NewCanvasCleanupWorkerWithResolver(gitProvider, agentResolver)
 		go w.Start(context.Background())
 	}
 
@@ -289,11 +311,11 @@ func startWorkers(
 	if os.Getenv("START_ORGANIZATION_CLEANUP_WORKER") == "yes" {
 		log.Println("Starting Organization Cleanup Worker")
 
-		w := workers.NewOrganizationCleanupWorker(gitProvider, agentProvider)
+		w := workers.NewOrganizationCleanupWorkerWithResolver(gitProvider, agentResolver)
 		go w.Start(context.Background())
 	}
 
-	if agentProvider != nil && os.Getenv("START_AGENT_STREAM_WORKER") != "no" {
+	if agentResolver != nil && os.Getenv("START_AGENT_STREAM_WORKER") != "no" {
 		log.Println("Starting Agent Stream Worker")
 		agentToolRegistry := agenttools.NewRegistry(agenttools.Dependencies{
 			Encryptor:         encryptor,
@@ -302,7 +324,7 @@ func startWorkers(
 			AuthService:       authService,
 			UsageService:      getOptionalWorkerUsageService(),
 		})
-		w := workers.NewAgentStreamWorker(agentProvider, rabbitMQURL, agentToolRegistry)
+		w := workers.NewAgentStreamWorkerWithResolver(agentResolver, rabbitMQURL, agentToolRegistry)
 		go w.Start(context.Background())
 	}
 
@@ -644,7 +666,7 @@ func Start() {
 		panic(fmt.Sprintf("failed to create registry: %v", err))
 	}
 
-	agentProvider, agentService := buildAgentService(authService)
+	agentResolver, agentService := buildAgentService(authService, encryptorInstance)
 
 	if os.Getenv("START_PUBLIC_API") == "yes" {
 		go startPublicAPI(
@@ -681,7 +703,7 @@ func Start() {
 		gitProvider,
 		baseURL,
 		authService,
-		agentProvider,
+		agentResolver,
 	)
 
 	log.Println("SuperPlane is UP.")

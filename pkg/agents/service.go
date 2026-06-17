@@ -21,18 +21,42 @@ import (
 var ErrSessionForbidden = errors.New("agent session is owned by another user")
 
 type Service struct {
-	provider Provider
+	resolver Resolver
 	auth     authorization.Authorization
 }
 
+// NewService wraps a single installation-wide provider as the agent service —
+// the same provider serves every organization. Retained for callers and tests
+// that hold one provider; per-organization selection uses NewServiceWithResolver.
 func NewService(provider Provider, auth authorization.Authorization) *Service {
+	return NewServiceWithResolver(StaticResolver(provider), auth)
+}
+
+// NewServiceWithResolver builds the agent service over a Resolver, so each
+// organization's sessions use the provider the resolver selects for it.
+func NewServiceWithResolver(resolver Resolver, auth authorization.Authorization) *Service {
 	return &Service{
-		provider: provider,
+		resolver: resolver,
 		auth:     auth,
 	}
 }
 
-func (s *Service) ProviderName() string { return s.provider.Name() }
+// ErrNoAgentProvider is returned when no agent provider is available for an
+// organization (no per-org provider and no installation-wide fallback).
+var ErrNoAgentProvider = errors.New("no agent provider configured for organization")
+
+// providerForOrg resolves the provider an organization's sessions must use,
+// erroring when none is available.
+func (s *Service) providerForOrg(ctx context.Context, organizationID uuid.UUID) (Provider, error) {
+	provider, err := s.resolver.ProviderForOrganization(ctx, organizationID)
+	if err != nil {
+		return nil, fmt.Errorf("resolve agent provider: %w", err)
+	}
+	if provider == nil {
+		return nil, ErrNoAgentProvider
+	}
+	return provider, nil
+}
 
 // EnsureSession returns the user's single chat session for the given canvas,
 // provisioning it on the upstream provider on first call.
@@ -52,8 +76,13 @@ func (s *Service) EnsureSession(ctx context.Context, organizationID, userID, can
 }
 
 func (s *Service) provisionSession(ctx context.Context, organizationID, userID, canvasID uuid.UUID) (*models.AgentSession, error) {
+	provider, err := s.providerForOrg(ctx, organizationID)
+	if err != nil {
+		return nil, err
+	}
+
 	var session *models.AgentSession
-	err := database.Conn().Transaction(func(tx *gorm.DB) error {
+	err = database.Conn().Transaction(func(tx *gorm.DB) error {
 		if err := tx.Exec("SELECT pg_advisory_xact_lock(?)", ensureSessionLockKey(organizationID, userID, canvasID)).Error; err != nil {
 			return err
 		}
@@ -68,7 +97,7 @@ func (s *Service) provisionSession(ctx context.Context, organizationID, userID, 
 		}
 
 		title := sessionTitle(organizationID, canvasID)
-		upstream, err := s.provider.CreateSession(ctx, CreateSessionOptions{Title: title})
+		upstream, err := provider.CreateSession(ctx, CreateSessionOptions{Title: title})
 		if err != nil {
 			return fmt.Errorf("create provider session: %w", err)
 		}
@@ -77,7 +106,7 @@ func (s *Service) provisionSession(ctx context.Context, organizationID, userID, 
 			OrganizationID:    organizationID,
 			UserID:            userID,
 			CanvasID:          canvasID,
-			Provider:          s.provider.Name(),
+			Provider:          provider.Name(),
 			ProviderSessionID: upstream.ProviderSessionID,
 			Status:            models.AgentSessionStatusIdle,
 		}
@@ -133,8 +162,14 @@ func (s *Service) InterruptSession(ctx context.Context, organizationID, userID, 
 
 	// Best-effort: any provider error still leaves the row at idle so the
 	// stop button can't leave the UI gated; SendMessage's recovery paths
-	// reconcile on the next turn.
-	if err := s.provider.InterruptSession(ctx, session.ProviderSessionID); err != nil {
+	// reconcile on the next turn. A resolver failure is treated the same way —
+	// the local reset already happened, so the UI is unblocked regardless.
+	provider, err := s.providerForOrg(ctx, session.OrganizationID)
+	if err != nil {
+		log.WithError(err).WithField("session_id", sessionID).Info("interrupt: provider unavailable, local reset already done")
+		return nil
+	}
+	if err := provider.InterruptSession(ctx, session.ProviderSessionID); err != nil {
 		if errors.Is(err, ErrProviderSessionUnavailable) {
 			log.WithField("session_id", sessionID).Info("interrupt: provider session unavailable, local reset already done")
 		} else {
@@ -182,9 +217,14 @@ func (s *Service) DefineOutcome(ctx context.Context, organizationID, userID, ses
 		return s.handleBusySession(sessionID, organizationID, userID)
 	}
 
+	provider, err := s.providerForOrg(ctx, session.OrganizationID)
+	if err != nil {
+		return err
+	}
+
 	preamble := s.buildPreamble(session, ModeBuilder)
 
-	if err := s.provider.DefineOutcome(ctx, session.ProviderSessionID, DefineOutcomeOptions{
+	if err := provider.DefineOutcome(ctx, session.ProviderSessionID, DefineOutcomeOptions{
 		Description:     description,
 		Rubric:          rubric,
 		MaxIterations:   maxIterations,
@@ -194,14 +234,14 @@ func (s *Service) DefineOutcome(ctx context.Context, organizationID, userID, ses
 			return s.handleBusySession(sessionID, organizationID, userID)
 		}
 		if errors.Is(err, ErrProviderSessionUnavailable) {
-			recovered, recoverErr := s.recoverProviderSession(ctx, session)
+			recovered, recoverErr := s.recoverProviderSession(ctx, session, provider)
 			if recoverErr != nil {
 				if errors.Is(recoverErr, ErrSessionBusy) {
 					return s.handleBusySession(sessionID, organizationID, userID)
 				}
 				return recoverErr
 			}
-			if err := s.provider.DefineOutcome(ctx, recovered.ProviderSessionID, DefineOutcomeOptions{
+			if err := provider.DefineOutcome(ctx, recovered.ProviderSessionID, DefineOutcomeOptions{
 				Description:     description,
 				Rubric:          rubric,
 				MaxIterations:   maxIterations,
@@ -237,6 +277,11 @@ func (s *Service) SendMessage(ctx context.Context, organizationID, userID, sessi
 		return nil, err
 	}
 
+	provider, err := s.providerForOrg(ctx, session.OrganizationID)
+	if err != nil {
+		return nil, err
+	}
+
 	agentMode := ModeOperator
 	if len(mode) > 0 {
 		agentMode = NormalizeMode(mode[0])
@@ -244,19 +289,19 @@ func (s *Service) SendMessage(ctx context.Context, organizationID, userID, sessi
 
 	preamble := s.buildPreamble(session, agentMode)
 
-	if err := s.provider.SendMessage(ctx, session.ProviderSessionID, content, SendMessageOptions{ContextPreamble: preamble}); err != nil {
+	if err := provider.SendMessage(ctx, session.ProviderSessionID, content, SendMessageOptions{ContextPreamble: preamble}); err != nil {
 		if errors.Is(err, ErrSessionBusy) {
 			return nil, s.handleBusySession(sessionID, organizationID, userID)
 		}
 		if errors.Is(err, ErrProviderSessionUnavailable) {
-			recovered, recoverErr := s.recoverProviderSession(ctx, session)
+			recovered, recoverErr := s.recoverProviderSession(ctx, session, provider)
 			if recoverErr != nil {
 				if errors.Is(recoverErr, ErrSessionBusy) {
 					return nil, s.handleBusySession(sessionID, organizationID, userID)
 				}
 				return nil, recoverErr
 			}
-			if err := s.provider.SendMessage(ctx, recovered.ProviderSessionID, content, SendMessageOptions{ContextPreamble: preamble}); err != nil {
+			if err := provider.SendMessage(ctx, recovered.ProviderSessionID, content, SendMessageOptions{ContextPreamble: preamble}); err != nil {
 				if errors.Is(err, ErrSessionBusy) {
 					return nil, s.handleBusySession(sessionID, organizationID, userID)
 				}
@@ -305,7 +350,7 @@ func (s *Service) enqueueStreamAfterBusySession(sessionID, organizationID, userI
 	return s.enqueueStream(sessionID, organizationID, userID)
 }
 
-func (s *Service) recoverProviderSession(ctx context.Context, stale *models.AgentSession) (*models.AgentSession, error) {
+func (s *Service) recoverProviderSession(ctx context.Context, stale *models.AgentSession, provider Provider) (*models.AgentSession, error) {
 	target, err := s.providerSessionRecoveryTarget(stale)
 	if err != nil {
 		return nil, fmt.Errorf("recover provider session: %w", err)
@@ -314,7 +359,7 @@ func (s *Service) recoverProviderSession(ctx context.Context, stale *models.Agen
 		return target.recovered, nil
 	}
 
-	upstream, err := s.provider.CreateSession(ctx, CreateSessionOptions{
+	upstream, err := provider.CreateSession(ctx, CreateSessionOptions{
 		Title: sessionTitle(target.organizationID, target.canvasID),
 	})
 	if err != nil {
@@ -323,11 +368,11 @@ func (s *Service) recoverProviderSession(ctx context.Context, stale *models.Agen
 
 	recovered, err := s.installRecoveredProviderSession(stale, upstream.ProviderSessionID)
 	if err != nil {
-		s.cleanupProviderSession(ctx, upstream.ProviderSessionID)
+		s.cleanupProviderSession(ctx, provider, upstream.ProviderSessionID)
 		return nil, fmt.Errorf("recover provider session: %w", err)
 	}
 	if recovered.ProviderSessionID != upstream.ProviderSessionID {
-		s.cleanupProviderSession(ctx, upstream.ProviderSessionID)
+		s.cleanupProviderSession(ctx, provider, upstream.ProviderSessionID)
 	}
 	return recovered, nil
 }
@@ -397,8 +442,8 @@ func (s *Service) installRecoveredProviderSession(stale *models.AgentSession, pr
 	return recovered, nil
 }
 
-func (s *Service) cleanupProviderSession(ctx context.Context, providerSessionID string) {
-	cleaner, ok := s.provider.(ProviderSessionCleaner)
+func (s *Service) cleanupProviderSession(ctx context.Context, provider Provider, providerSessionID string) {
+	cleaner, ok := provider.(ProviderSessionCleaner)
 	if !ok {
 		return
 	}
