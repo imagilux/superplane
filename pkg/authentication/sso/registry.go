@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
+	"github.com/superplanehq/superplane/pkg/netguard"
 	"golang.org/x/oauth2"
 )
 
@@ -55,7 +56,7 @@ func NewRegistry(ttl time.Duration) *Registry {
 	return &Registry{
 		entries:    make(map[string]*entry),
 		ttl:        ttl,
-		httpClient: NewGuardedHTTPClient(10 * time.Second),
+		httpClient: netguard.NewGuardedHTTPClient(10 * time.Second),
 	}
 }
 

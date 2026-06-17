@@ -14,7 +14,7 @@ import (
 
 	jwtLib "github.com/golang-jwt/jwt/v4"
 	"github.com/stretchr/testify/require"
-	"github.com/superplanehq/superplane/pkg/authentication/sso"
+	"github.com/superplanehq/superplane/pkg/netguard"
 )
 
 // MockOIDCProvider is an in-memory OIDC identity provider for tests. It serves
@@ -47,7 +47,7 @@ type MockIDClaims struct {
 // NewMockOIDCProvider starts a mock IdP and registers cleanup on the test.
 func NewMockOIDCProvider(t require.TestingT, clientID string) *MockOIDCProvider {
 	// The mock listens on loopback (httptest); allow the SSRF guard to reach it.
-	sso.AllowLoopbackForTesting()
+	netguard.AllowLoopbackForTesting()
 
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	require.NoError(t, err)

@@ -123,6 +123,22 @@ func TestProviderStreamErrorYieldsSessionFailed(t *testing.T) {
 	assert.Contains(t, events[0].ErrorMessage, "500")
 }
 
+func TestProviderDefaultClientGuardsAgainstSSRF(t *testing.T) {
+	// With no injected client, the provider uses the SSRF-guarded default. A
+	// link-local target (here the cloud-metadata address) must be refused at
+	// dial time, surfacing as a failed session rather than a reachable fetch.
+	p, err := New(Config{BaseURL: "http://169.254.169.254/v1", Model: "m"})
+	require.NoError(t, err)
+	res, err := p.CreateSession(context.Background(), agents.CreateSessionOptions{})
+	require.NoError(t, err)
+	require.NoError(t, p.SendMessage(context.Background(), res.ProviderSessionID, "hi", agents.SendMessageOptions{}))
+
+	events := collect(t, p, res.ProviderSessionID)
+	require.Len(t, events, 1)
+	assert.Equal(t, agents.ProviderEventSessionFailed, events[0].Type)
+	assert.Contains(t, events[0].ErrorMessage, "blocked address")
+}
+
 func TestProviderDefineOutcomeUnsupported(t *testing.T) {
 	p, err := New(Config{BaseURL: "http://example.invalid", Model: "m"})
 	require.NoError(t, err)

@@ -23,6 +23,7 @@ import (
 	"github.com/google/uuid"
 	log "github.com/sirupsen/logrus"
 	"github.com/superplanehq/superplane/pkg/agents"
+	"github.com/superplanehq/superplane/pkg/netguard"
 )
 
 const ProviderName = "openai"
@@ -83,9 +84,15 @@ func New(cfg Config) (*Provider, error) {
 	if strings.TrimSpace(cfg.Model) == "" {
 		return nil, fmt.Errorf("openai: Model is required")
 	}
+	// When no client is injected (production), default to an SSRF-guarded
+	// client: the base URL is admin-supplied, so the server must not be coaxed
+	// into dialing cloud-metadata / link-local / multicast addresses. Loopback
+	// IS allowed here — a local model server on 127.0.0.1 (Ollama, llama.cpp) is
+	// a legitimate target for a custom agent endpoint. Tests inject their own
+	// client to reach httptest servers.
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 5 * time.Minute}
+		httpClient = netguard.NewGuardedHTTPClientAllowingLoopback(5 * time.Minute)
 	}
 	return &Provider{
 		baseURL:    strings.TrimRight(cfg.BaseURL, "/"),
