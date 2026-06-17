@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -213,15 +214,108 @@ func TestProviderSeedsSharedSystemPrompt(t *testing.T) {
 	assert.Equal(t, agents.AgentSystemPrompt(), h[0].Content)
 }
 
-func TestProviderDefineOutcomeUnsupported(t *testing.T) {
-	p, err := New(Config{BaseURL: "http://example.invalid", Model: "m"})
+// outcomeServer streams a plain answer for build turns and a JSON verdict for
+// grading turns (recognized by the grader prompt), so a DefineOutcome loop can
+// be driven deterministically.
+func outcomeServer(t *testing.T, buildAnswer func(n int) string, verdict func(n int) string) *httptest.Server {
+	t.Helper()
+	var mu sync.Mutex
+	var builds, grades int
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		grading := strings.Contains(string(body), "Grade the work done so far")
+		mu.Lock()
+		var content string
+		if grading {
+			content = verdict(grades)
+			grades++
+		} else {
+			content = buildAnswer(builds)
+			builds++
+		}
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":%q},\"finish_reason\":null}]}\n\n", content)
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}))
+}
+
+func TestProviderDefineOutcomeLoop(t *testing.T) {
+	// Iteration 0 grades needs_revision, iteration 1 grades satisfied.
+	verdicts := []string{
+		`{"satisfied": false, "explanation": "missing the retry"}`,
+		`{"satisfied": true, "explanation": "all criteria met"}`,
+	}
+	answers := []string{"first attempt", "second attempt"}
+	srv := outcomeServer(t, func(n int) string { return answers[n] }, func(n int) string { return verdicts[n] })
+	defer srv.Close()
+
+	p, err := New(Config{BaseURL: srv.URL, Model: "m", HTTPClient: srv.Client()})
 	require.NoError(t, err)
 	res, err := p.CreateSession(context.Background(), agents.CreateSessionOptions{})
 	require.NoError(t, err)
 
-	err = p.DefineOutcome(context.Background(), res.ProviderSessionID, agents.DefineOutcomeOptions{})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "not supported")
+	require.NoError(t, p.DefineOutcome(context.Background(), res.ProviderSessionID, agents.DefineOutcomeOptions{
+		Description:   "Build a health check",
+		Rubric:        "Has a retry on failure",
+		MaxIterations: 3,
+	}))
+
+	events := collect(t, p, res.ProviderSessionID)
+
+	var types []agents.ProviderEventType
+	for _, e := range events {
+		types = append(types, e.Type)
+	}
+	require.Equal(t, []agents.ProviderEventType{
+		agents.ProviderEventOutcomeEvaluationStart,
+		agents.ProviderEventAssistantMessage,
+		agents.ProviderEventOutcomeEvaluation,
+		agents.ProviderEventOutcomeEvaluationStart,
+		agents.ProviderEventAssistantMessage,
+		agents.ProviderEventOutcomeEvaluation,
+		agents.ProviderEventTurnCompleted,
+	}, types)
+
+	require.NotNil(t, events[2].OutcomeResult)
+	assert.Equal(t, 0, events[2].OutcomeResult.Iteration)
+	assert.Equal(t, "needs_revision", events[2].OutcomeResult.Result)
+	assert.Contains(t, events[2].OutcomeResult.Explanation, "missing the retry")
+
+	require.NotNil(t, events[5].OutcomeResult)
+	assert.Equal(t, 1, events[5].OutcomeResult.Iteration)
+	assert.Equal(t, "satisfied", events[5].OutcomeResult.Result)
+}
+
+func TestProviderDefineOutcomeMaxIterations(t *testing.T) {
+	// Always needs_revision: with MaxIterations=1 the loop stops after one attempt
+	// reporting max_iterations_reached, not a false pass.
+	srv := outcomeServer(t,
+		func(int) string { return "an attempt" },
+		func(int) string { return `{"satisfied": false, "explanation": "still not there"}` },
+	)
+	defer srv.Close()
+
+	p, err := New(Config{BaseURL: srv.URL, Model: "m", HTTPClient: srv.Client()})
+	require.NoError(t, err)
+	res, err := p.CreateSession(context.Background(), agents.CreateSessionOptions{})
+	require.NoError(t, err)
+
+	require.NoError(t, p.DefineOutcome(context.Background(), res.ProviderSessionID, agents.DefineOutcomeOptions{
+		Description: "x", Rubric: "y", MaxIterations: 1,
+	}))
+
+	events := collect(t, p, res.ProviderSessionID)
+	require.Len(t, events, 4)
+	assert.Equal(t, agents.ProviderEventOutcomeEvaluationStart, events[0].Type)
+	assert.Equal(t, agents.ProviderEventAssistantMessage, events[1].Type)
+	require.NotNil(t, events[2].OutcomeResult)
+	assert.Equal(t, "max_iterations_reached", events[2].OutcomeResult.Result)
+	assert.Equal(t, agents.ProviderEventTurnCompleted, events[3].Type)
 }
 
 func TestProviderNoAPIKeyOmitsAuthHeader(t *testing.T) {
