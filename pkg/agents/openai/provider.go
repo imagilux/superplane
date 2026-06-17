@@ -6,13 +6,14 @@
 // completion in a goroutine whose events StreamEvents drains.
 //
 // Tool calls are surfaced as custom-tool events; the worker executes them and
-// calls SendCustomToolResults, which resumes the turn. The autonomous rubric
-// loop (DefineOutcome) has no OpenAI-compatible equivalent and is reported
-// unsupported.
+// calls SendCustomToolResults, which resumes the turn. DefineOutcome runs an
+// autonomous build→grade→iterate loop client-side, the model grading its own
+// work against the rubric.
 package openai
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -27,11 +28,6 @@ import (
 )
 
 const ProviderName = "openai"
-
-// ErrDefineOutcomeUnsupported is returned by DefineOutcome: the autonomous
-// rubric/outcome loop is a managed-agent feature with no OpenAI-compatible
-// equivalent (tracked as a follow-up).
-var ErrDefineOutcomeUnsupported = errors.New("openai: DefineOutcome (autonomous rubric loop) is not supported by OpenAI-compatible providers")
 
 // ToolDefinition is a provider-neutral description of a custom tool the agent
 // can call. buildAgentService sources these from the agent_tools registry; this
@@ -160,7 +156,7 @@ func (p *Provider) runTurn(ctx context.Context, s *session) {
 	var content, reasoning strings.Builder
 	tools := newToolCallAccumulator()
 
-	err := p.streamCompletion(ctx, s.snapshotHistory(), func(chunk chatCompletionChunk) error {
+	err := p.streamCompletion(ctx, s.snapshotHistory(), true, func(chunk chatCompletionChunk) error {
 		if chunk.Error != nil && chunk.Error.Message != "" {
 			return errors.New(chunk.Error.Message)
 		}
@@ -176,9 +172,14 @@ func (p *Provider) runTurn(ctx context.Context, s *session) {
 	if err != nil {
 		// An interrupt (cancelled ctx) is a clean stop, not a failure.
 		if errors.Is(err, context.Canceled) {
+			if oc := s.currentOutcome(); oc != nil {
+				s.enqueue(agents.ProviderEvent{Type: agents.ProviderEventOutcomeEvaluation, OutcomeResult: &agents.OutcomeEvaluation{Iteration: oc.iteration, Result: "interrupted"}})
+				s.clearOutcome()
+			}
 			s.enqueue(agents.ProviderEvent{Type: agents.ProviderEventTurnCompleted})
 			return
 		}
+		s.clearOutcome()
 		s.enqueue(agents.ProviderEvent{Type: agents.ProviderEventSessionFailed, ErrorMessage: err.Error()})
 		return
 	}
@@ -232,6 +233,14 @@ func (p *Provider) runTurn(ctx context.Context, s *session) {
 			Text:            answer,
 		})
 	}
+	// In an autonomous outcome loop, grade this iteration's result against the
+	// rubric and either finish or revise — rather than completing the turn. No
+	// terminal event mid-loop keeps the worker's stream open across iterations.
+	if oc := s.currentOutcome(); oc != nil {
+		p.evaluateOutcome(ctx, s, oc)
+		return
+	}
+
 	s.enqueue(agents.ProviderEvent{Type: agents.ProviderEventTurnCompleted})
 }
 
@@ -269,10 +278,144 @@ func (p *Provider) InterruptSession(_ context.Context, providerSessionID string)
 	return nil
 }
 
-// DefineOutcome is unsupported: the rubric-driven autonomous loop is a managed-
-// agent capability with no OpenAI-compatible equivalent.
-func (p *Provider) DefineOutcome(_ context.Context, _ string, _ agents.DefineOutcomeOptions) error {
-	return ErrDefineOutcomeUnsupported
+// DefineOutcome runs an autonomous build→grade→iterate loop client-side. The
+// agent attempts the goal; a separate, tool-less completion then judges the work
+// against the rubric and returns a structured pass/fail + explanation; on a fail
+// the agent revises with that feedback, up to MaxIterations. It emits the
+// outcome_evaluation_start / outcome_evaluation events the worker and UI consume.
+// Unlike Anthropic's managed grader, the model grades its own work — faithful,
+// but only as reliable as the configured model.
+func (p *Provider) DefineOutcome(_ context.Context, providerSessionID string, opts agents.DefineOutcomeOptions) error {
+	s, err := p.getSession(providerSessionID)
+	if err != nil {
+		return err
+	}
+
+	maxIter := opts.MaxIterations
+	if maxIter <= 0 {
+		maxIter = 3
+	}
+	s.startOutcome(&outcomeState{rubric: opts.Rubric, maxIterations: maxIter, preamble: opts.ContextPreamble})
+
+	goal := opts.Description
+	if opts.ContextPreamble != "" {
+		goal = opts.ContextPreamble + "\n\n" + opts.Description
+	}
+	s.appendHistory(chatMessage{Role: "user", Content: goal})
+	s.enqueue(agents.ProviderEvent{
+		Type:          agents.ProviderEventOutcomeEvaluationStart,
+		OutcomeResult: &agents.OutcomeEvaluation{Iteration: 0},
+	})
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	s.setCancel(cancel)
+	go p.runTurn(runCtx, s)
+	return nil
+}
+
+// evaluateOutcome grades the just-finished build iteration and either completes
+// the turn (satisfied, or out of iterations) or revises and runs the next one.
+// It runs inside the iteration's runTurn goroutine and tail-spawns the next, so
+// only one runTurn touches the session at a time.
+func (p *Provider) evaluateOutcome(ctx context.Context, s *session, oc *outcomeState) {
+	satisfied, explanation, err := p.gradeAgainstRubric(ctx, s, oc.rubric)
+	if err != nil {
+		if errors.Is(err, context.Canceled) {
+			s.enqueue(agents.ProviderEvent{Type: agents.ProviderEventOutcomeEvaluation, OutcomeResult: &agents.OutcomeEvaluation{Iteration: oc.iteration, Result: "interrupted"}})
+			s.enqueue(agents.ProviderEvent{Type: agents.ProviderEventTurnCompleted})
+			s.clearOutcome()
+			return
+		}
+		s.clearOutcome()
+		s.enqueue(agents.ProviderEvent{Type: agents.ProviderEventSessionFailed, ErrorMessage: fmt.Sprintf("openai: outcome grading failed: %v", err)})
+		return
+	}
+
+	last := oc.iteration+1 >= oc.maxIterations
+	result := "needs_revision"
+	switch {
+	case satisfied:
+		result = "satisfied"
+	case last:
+		result = "max_iterations_reached"
+	}
+	s.enqueue(agents.ProviderEvent{
+		Type:          agents.ProviderEventOutcomeEvaluation,
+		OutcomeResult: &agents.OutcomeEvaluation{Iteration: oc.iteration, Result: result, Explanation: explanation},
+	})
+
+	if satisfied || last {
+		s.enqueue(agents.ProviderEvent{Type: agents.ProviderEventTurnCompleted})
+		s.clearOutcome()
+		return
+	}
+
+	// Revise: feed the grader's explanation back and run the next iteration.
+	oc.iteration++
+	revision := fmt.Sprintf(
+		"The previous attempt did not satisfy the rubric.\n\nFeedback:\n%s\n\nRevise your work to satisfy this rubric:\n%s",
+		explanation, oc.rubric,
+	)
+	if oc.preamble != "" {
+		revision = oc.preamble + "\n\n" + revision
+	}
+	s.appendHistory(chatMessage{Role: "user", Content: revision})
+	s.enqueue(agents.ProviderEvent{
+		Type:          agents.ProviderEventOutcomeEvaluationStart,
+		OutcomeResult: &agents.OutcomeEvaluation{Iteration: oc.iteration},
+	})
+	go p.runTurn(ctx, s)
+}
+
+// gradeAgainstRubric runs a tool-less completion that judges the conversation's
+// work against the rubric, returning a structured pass/fail + explanation. An
+// unparseable verdict is treated as not-satisfied so the loop never declares a
+// false pass.
+func (p *Provider) gradeAgainstRubric(ctx context.Context, s *session, rubric string) (bool, string, error) {
+	prompt := "Grade the work done so far in this conversation against the rubric below. " +
+		"Do not do any further work or call any tools. Respond with ONLY a JSON object: " +
+		`{"satisfied": <true|false>, "explanation": "<one or two sentences>"}.` +
+		"\n\nRubric:\n" + rubric
+	history := append(s.snapshotHistory(), chatMessage{Role: "user", Content: prompt})
+
+	var content strings.Builder
+	err := p.streamCompletion(ctx, history, false, func(chunk chatCompletionChunk) error {
+		if chunk.Error != nil && chunk.Error.Message != "" {
+			return errors.New(chunk.Error.Message)
+		}
+		for _, choice := range chunk.Choices {
+			content.WriteString(choice.Delta.Content)
+		}
+		return nil
+	})
+	if err != nil {
+		return false, "", err
+	}
+
+	answer, _ := splitReasoning(content.String())
+	return parseGradeVerdict(answer)
+}
+
+type gradeVerdict struct {
+	Satisfied   bool   `json:"satisfied"`
+	Explanation string `json:"explanation"`
+}
+
+// parseGradeVerdict extracts the {"satisfied":...,"explanation":...} object from
+// the grader's reply, tolerating prose or code fences around it. A missing or
+// invalid verdict is reported as not-satisfied (never a false pass), surfacing
+// the raw text as the explanation.
+func parseGradeVerdict(text string) (bool, string, error) {
+	start := strings.Index(text, "{")
+	end := strings.LastIndex(text, "}")
+	if start < 0 || end <= start {
+		return false, strings.TrimSpace(text), nil
+	}
+	var v gradeVerdict
+	if err := json.Unmarshal([]byte(text[start:end+1]), &v); err != nil {
+		return false, strings.TrimSpace(text), nil
+	}
+	return v.Satisfied, strings.TrimSpace(v.Explanation), nil
 }
 
 // StreamEvents drains the session's event channel until a terminal event, ctx

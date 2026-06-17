@@ -25,6 +25,18 @@ type session struct {
 	cancel  context.CancelFunc
 	events  chan agents.ProviderEvent
 	closed  bool
+	// outcome is non-nil while a DefineOutcome autonomous loop is running.
+	outcome *outcomeState
+}
+
+// outcomeState tracks an in-flight DefineOutcome loop: the rubric to grade
+// against, the iteration cap, the current 0-indexed iteration, and the context
+// preamble re-injected on each revision.
+type outcomeState struct {
+	rubric        string
+	maxIterations int
+	iteration     int
+	preamble      string
 }
 
 func newSession(id string, history []chatMessage) *session {
@@ -45,6 +57,24 @@ func (s *session) appendHistory(msgs ...chatMessage) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.history = append(s.history, msgs...)
+}
+
+func (s *session) startOutcome(oc *outcomeState) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.outcome = oc
+}
+
+func (s *session) currentOutcome() *outcomeState {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.outcome
+}
+
+func (s *session) clearOutcome() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.outcome = nil
 }
 
 func (s *session) setCancel(cancel context.CancelFunc) {

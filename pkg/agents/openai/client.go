@@ -92,14 +92,15 @@ type chunkToolCallDelta struct {
 
 // streamCompletion POSTs a streaming chat-completion request and invokes onChunk
 // for each parsed SSE frame until the `[DONE]` sentinel, ctx cancellation, or
-// onChunk returns an error. Malformed frames are skipped.
-func (p *Provider) streamCompletion(ctx context.Context, messages []chatMessage, onChunk func(chatCompletionChunk) error) error {
+// onChunk returns an error. Malformed frames are skipped. includeTools=false
+// advertises no tools (used for rubric grading, which must not call tools).
+func (p *Provider) streamCompletion(ctx context.Context, messages []chatMessage, includeTools bool, onChunk func(chatCompletionChunk) error) error {
 	reqBody := chatCompletionRequest{
 		Model:    p.model,
 		Messages: messages,
 		Stream:   true,
 	}
-	if len(p.tools) > 0 {
+	if includeTools && len(p.tools) > 0 {
 		reqBody.Tools = p.toolSpecs()
 		reqBody.ToolChoice = "auto"
 	}
