@@ -16,8 +16,15 @@ type InstallationMetadata struct {
 	ID                        int    `gorm:"primary_key"`
 	InstallationID            string `gorm:"type:varchar(64)"`
 	AllowPrivateNetworkAccess bool
-	CreatedAt                 time.Time
-	UpdatedAt                 time.Time
+	PasswordLoginDisabled     bool
+	SSOLoginHintEnabled       bool
+	SSOPromptNoneEnabled      bool
+	SSOAutoLoginEnabled       bool
+	// Pin the column: GORM's namer would otherwise map the mixed-case "IdP" to
+	// sso_id_p_logout_enabled, which does not match the migration.
+	SSOIdPLogoutEnabled bool `gorm:"column:sso_idp_logout_enabled"`
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 func GetInstallationMetadata() (*InstallationMetadata, error) {
@@ -54,6 +61,11 @@ func UpdateInstallationMetadataInTransaction(tx *gorm.DB, metadata *Installation
 		Where("id = ?", installationMetadataID).
 		Updates(map[string]any{
 			"allow_private_network_access": metadata.AllowPrivateNetworkAccess,
+			"password_login_disabled":      metadata.PasswordLoginDisabled,
+			"sso_login_hint_enabled":       metadata.SSOLoginHintEnabled,
+			"sso_prompt_none_enabled":      metadata.SSOPromptNoneEnabled,
+			"sso_auto_login_enabled":       metadata.SSOAutoLoginEnabled,
+			"sso_idp_logout_enabled":       metadata.SSOIdPLogoutEnabled,
 			"updated_at":                   metadata.UpdatedAt,
 		}).
 		Error

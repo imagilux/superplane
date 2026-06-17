@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import superplaneLogo from "@/assets/superplane.svg";
 import { Button } from "@/components/ui/button";
@@ -17,6 +17,19 @@ type AuthConfig = {
   passwordLoginEnabled: boolean;
   signupEnabled: boolean;
   magicCodeEnabled: boolean;
+  ssoEnabled: boolean;
+  ssoLoginHintEnabled: boolean;
+  ssoPromptNoneEnabled: boolean;
+  ssoAutoLoginEnabled: boolean;
+  ssoAutoLoginUrl: string;
+};
+
+type SsoProviderOption = {
+  orgId: string;
+  orgName: string;
+  providerSlug: string;
+  displayName: string;
+  loginUrl: string;
 };
 
 const isValidRedirectPath = (path: string | null): path is string => {
@@ -55,6 +68,19 @@ const getProviderLabel = (provider: string) => {
   }
 };
 
+const fetchSsoProviders = async (email: string): Promise<SsoProviderOption[]> => {
+  const response = await fetch(`/auth/sso/providers?email=${encodeURIComponent(email)}`, {
+    credentials: "include",
+  });
+
+  if (!response.ok) {
+    throw new Error("Failed to look up SSO providers. Please try again.");
+  }
+
+  const data = (await response.json()) as { providers?: SsoProviderOption[] };
+  return data.providers || [];
+};
+
 type MagicCodeStep = "email" | "code";
 
 const LastUsedHint: React.FC<{ label: string }> = ({ label }) => (
@@ -67,6 +93,11 @@ export const Login: React.FC = () => {
     passwordLoginEnabled: false,
     signupEnabled: false,
     magicCodeEnabled: false,
+    ssoEnabled: false,
+    ssoLoginHintEnabled: false,
+    ssoPromptNoneEnabled: false,
+    ssoAutoLoginEnabled: false,
+    ssoAutoLoginUrl: "",
   });
   const [configLoading, setConfigLoading] = useState(true);
   const [configError, setConfigError] = useState<string | null>(null);
@@ -85,6 +116,12 @@ export const Login: React.FC = () => {
   const [magicCodeEmail, setMagicCodeEmail] = useState("");
   const [magicCode, setMagicCode] = useState("");
   const [showPasswordLogin, setShowPasswordLogin] = useState(false);
+
+  const [showSsoForm, setShowSsoForm] = useState(false);
+  const [ssoEmail, setSsoEmail] = useState("");
+  const [ssoLoading, setSsoLoading] = useState(false);
+  const [ssoError, setSsoError] = useState<string | null>(null);
+  const [ssoProviderOptions, setSsoProviderOptions] = useState<SsoProviderOption[]>([]);
 
   const [lastUsedMethod, setLastUsedMethod] = useState<LastUsedLoginMethod | null>(null);
 
@@ -197,6 +234,11 @@ export const Login: React.FC = () => {
             passwordLoginEnabled: Boolean(data.passwordLoginEnabled),
             signupEnabled: Boolean(data.signupEnabled),
             magicCodeEnabled: Boolean(data.magicCodeEnabled),
+            ssoEnabled: Boolean(data.ssoEnabled),
+            ssoLoginHintEnabled: Boolean(data.ssoLoginHintEnabled),
+            ssoPromptNoneEnabled: Boolean(data.ssoPromptNoneEnabled),
+            ssoAutoLoginEnabled: Boolean(data.ssoAutoLoginEnabled),
+            ssoAutoLoginUrl: typeof data.ssoAutoLoginUrl === "string" ? data.ssoAutoLoginUrl : "",
           });
         }
       } catch {
@@ -227,6 +269,57 @@ export const Login: React.FC = () => {
   const redirectQuery = safeRedirect ? `?redirect=${encodeURIComponent(safeRedirect)}` : "";
   const showProviderButtons = hasProviders && (!isSignupMode || canSignup);
   const useMagicCodePrimary = authConfig.magicCodeEnabled && !showPasswordLogin;
+  const showSsoOption = authConfig.ssoEnabled && !isSignupMode && (!useMagicCodePrimary || magicCodeStep === "email");
+  // SSO is the only available method when nothing else is configured/enabled.
+  const ssoOnly =
+    authConfig.ssoEnabled &&
+    !canLoginWithPassword &&
+    !canSignupWithPassword &&
+    !showProviderButtons &&
+    !useMagicCodePrimary;
+
+  // When SSO is the only method, land directly on its email-entry form rather
+  // than the extra "Sign in with SSO" click.
+  useEffect(() => {
+    if (ssoOnly) {
+      setShowSsoForm(true);
+    }
+  }, [ssoOnly]);
+
+  // Unattended SSO auto-login: when the installation enables it (and /auth/config
+  // exposes a sole-provider URL), silently attempt SSO on a clean login visit so
+  // a user with a live IdP session never sees a login screen. Guards: one-shot
+  // per mount; skip when a prior silent attempt failed (?sso_error -> no loop),
+  // when already authenticated or still loading, or in an invite / magic-link /
+  // signup flow (each handled elsewhere).
+  const autoLoginAttempted = useRef(false);
+  useEffect(() => {
+    if (autoLoginAttempted.current) return;
+    if (!authConfig.ssoAutoLoginUrl) return;
+    // Skip right after an explicit sign-out so logout sticks (no instant reconnect).
+    if (searchParams.get("logged_out")) return;
+    if (searchParams.get("sso_error") || searchParams.get("error")) return;
+    if (accountLoading || account) return;
+    if (inviteToken || magicLinkToken || isSignupMode) return;
+
+    autoLoginAttempted.current = true;
+    const params = new URLSearchParams();
+    params.set("prompt", "none");
+    if (safeRedirect) {
+      params.set("redirect", safeRedirect);
+    }
+    const sep = authConfig.ssoAutoLoginUrl.includes("?") ? "&" : "?";
+    window.location.href = `${authConfig.ssoAutoLoginUrl}${sep}${params.toString()}`;
+  }, [
+    authConfig.ssoAutoLoginUrl,
+    account,
+    accountLoading,
+    inviteToken,
+    magicLinkToken,
+    isSignupMode,
+    safeRedirect,
+    searchParams,
+  ]);
 
   useEffect(() => {
     if (!canSignup && isSignupMode) {
@@ -378,6 +471,52 @@ export const Login: React.FC = () => {
     }
   };
 
+  const navigateToSsoProvider = (provider: SsoProviderOption) => {
+    recordLastUsedLoginMethod("sso");
+    const params = new URLSearchParams();
+    if (safeRedirect) {
+      params.set("redirect", safeRedirect);
+    }
+    // Forward the entered email as login_hint when the installation allows it, so
+    // the IdP can pre-fill the username. The backend ignores it unless enabled.
+    if (authConfig.ssoLoginHintEnabled && ssoEmail.trim()) {
+      params.set("login_hint", ssoEmail.trim());
+    }
+    const query = params.toString();
+    const separator = provider.loginUrl.includes("?") ? "&" : "?";
+    window.location.href = query ? `${provider.loginUrl}${separator}${query}` : provider.loginUrl;
+  };
+
+  const handleSsoSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSsoError(null);
+    setSsoProviderOptions([]);
+
+    if (!ssoEmail.trim()) {
+      setSsoError("Email is required");
+      return;
+    }
+
+    setSsoLoading(true);
+
+    try {
+      const options = await fetchSsoProviders(ssoEmail.trim());
+
+      if (options.length === 0) {
+        setSsoError("No SSO configured for that email address.");
+      } else if (options.length === 1) {
+        navigateToSsoProvider(options[0]);
+        return;
+      } else {
+        setSsoProviderOptions(options);
+      }
+    } catch {
+      setSsoError("Failed to look up SSO providers. Please try again.");
+    }
+
+    setSsoLoading(false);
+  };
+
   const handleSignupSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(null);
@@ -441,7 +580,12 @@ export const Login: React.FC = () => {
     }
   };
 
-  const hasAnyFormMethod = canLoginWithPassword || canSignupWithPassword || showProviderButtons || useMagicCodePrimary;
+  const hasAnyFormMethod =
+    canLoginWithPassword ||
+    canSignupWithPassword ||
+    showProviderButtons ||
+    useMagicCodePrimary ||
+    authConfig.ssoEnabled;
 
   const getHeading = () => {
     if (isSignupMode) return "Create your account";
@@ -470,6 +614,12 @@ export const Login: React.FC = () => {
           {configError && (
             <div className="mb-4 rounded-md border border-red-300 bg-white px-3 py-1 text-sm text-red-500">
               {configError}
+            </div>
+          )}
+
+          {searchParams.get("logged_out") && (
+            <div className="mb-4 rounded-md border border-green-300 bg-white px-3 py-1 text-sm text-green-600">
+              You’ve been signed out.
             </div>
           )}
 
@@ -753,6 +903,89 @@ export const Login: React.FC = () => {
                   {lastUsedMethod === provider && <LastUsedHint label={getProviderLabel(provider)} />}
                 </div>
               ))}
+            </div>
+          )}
+
+          {!configLoading && showSsoOption && (
+            <div className="mt-3">
+              {!showSsoForm ? (
+                <div>
+                  <Button
+                    variant="outline"
+                    className="w-full justify-center"
+                    onClick={() => {
+                      setShowSsoForm(true);
+                      setSsoError(null);
+                      setSsoProviderOptions([]);
+                    }}
+                  >
+                    Sign in with SSO
+                  </Button>
+                  {lastUsedMethod === "sso" && <LastUsedHint label="SSO" />}
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {ssoError && (
+                    <div className="rounded-md border border-red-300 bg-white px-3 py-1 text-sm text-red-500">
+                      {ssoError}
+                    </div>
+                  )}
+
+                  {ssoProviderOptions.length > 1 ? (
+                    <div className="space-y-3">
+                      <p className="text-sm text-gray-600">Choose an organization to continue:</p>
+                      {ssoProviderOptions.map((option) => (
+                        <Button
+                          key={`${option.orgId}-${option.providerSlug}`}
+                          variant="outline"
+                          className="w-full justify-center"
+                          onClick={() => navigateToSsoProvider(option)}
+                        >
+                          <span>
+                            {option.displayName}
+                            <span className="text-gray-500"> — {option.orgName}</span>
+                          </span>
+                        </Button>
+                      ))}
+                    </div>
+                  ) : (
+                    <form onSubmit={handleSsoSubmit} className="space-y-4">
+                      <div className="space-y-2">
+                        <Label>Work email</Label>
+                        <Input
+                          type="email"
+                          name="ssoEmail"
+                          placeholder="you@example.com"
+                          required
+                          autoComplete="email"
+                          value={ssoEmail}
+                          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setSsoEmail(e.target.value)}
+                        />
+                      </div>
+
+                      <LoadingButton type="submit" loading={ssoLoading} loadingText="Looking up..." className="w-full">
+                        Continue with SSO
+                      </LoadingButton>
+                    </form>
+                  )}
+
+                  {!ssoOnly && (
+                    <div className="text-center">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowSsoForm(false);
+                          setSsoError(null);
+                          setSsoProviderOptions([]);
+                        }}
+                        className="text-sm text-gray-500 underline underline-offset-2"
+                      >
+                        Back to other sign-in options
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
 

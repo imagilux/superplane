@@ -16,6 +16,8 @@ import { Secrets } from "./Secrets";
 import { SecretDetail } from "./SecretDetail";
 import { ServiceAccounts } from "./ServiceAccounts";
 import { ServiceAccountDetail } from "./ServiceAccountDetail";
+import { SingleSignOn } from "./SingleSignOn";
+import { SingleSignOnDetail } from "./SingleSignOnDetail";
 import { Usage } from "./Usage";
 import SuperplaneLogo from "@/assets/superplane.svg";
 import { isUsagePageForced } from "@/lib/env";
@@ -27,6 +29,7 @@ import {
   CircleUser,
   Home,
   Key,
+  KeyRound,
   Lock,
   LogOut,
   Plug,
@@ -111,6 +114,7 @@ export function OrganizationSettings() {
     "integrations",
     "secrets",
     "service-accounts",
+    "sso",
     "billing",
   ];
   const pathSegments = location.pathname?.split("/").filter(Boolean) || [];
@@ -161,6 +165,13 @@ export function OrganizationSettings() {
       permission: { resource: "service_accounts", action: "read" },
     },
     {
+      id: "sso",
+      label: "Single Sign-On",
+      href: `/${organizationId}/settings/sso`,
+      Icon: KeyRound,
+      permission: { resource: "oidc_providers", action: "read" },
+    },
+    {
       id: "groups",
       label: "Groups",
       href: `/${organizationId}/settings/groups`,
@@ -192,7 +203,7 @@ export function OrganizationSettings() {
   ];
 
   if (usageEnabled) {
-    organizationLinks.splice(6, 0, {
+    organizationLinks.splice(7, 0, {
       id: "billing",
       label: "Usage",
       href: `/${organizationId}/settings/billing`,
@@ -220,6 +231,9 @@ export function OrganizationSettings() {
       return true;
     }
     if (link.id === "service-accounts" && currentSection === "service-accounts") {
+      return true;
+    }
+    if (link.id === "sso" && currentSection === "sso") {
       return true;
     }
     return currentSection === link.id;
@@ -269,6 +283,10 @@ export function OrganizationSettings() {
     "service-accounts": {
       title: "Service Accounts",
       description: "Create and manage service accounts for programmatic API access.",
+    },
+    sso: {
+      title: "Single Sign-On",
+      description: "Let members sign in through your organization's identity provider.",
     },
     profile: {
       title: "Profile",
@@ -548,6 +566,22 @@ export function OrganizationSettings() {
               element={
                 <RequirePermission resource="service_accounts" action="read">
                   <ServiceAccountDetail organizationId={organizationId || ""} />
+                </RequirePermission>
+              }
+            />
+            <Route
+              path="sso"
+              element={
+                <RequirePermission resource="oidc_providers" action="read">
+                  <SingleSignOn organizationId={organizationId || ""} />
+                </RequirePermission>
+              }
+            />
+            <Route
+              path="sso/:id"
+              element={
+                <RequirePermission resource="oidc_providers" action="read">
+                  <SingleSignOnDetail organizationId={organizationId || ""} />
                 </RequirePermission>
               }
             />

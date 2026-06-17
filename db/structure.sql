@@ -97,7 +97,8 @@ CREATE TABLE public.accounts (
     created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP NOT NULL,
     installation_admin boolean DEFAULT false NOT NULL,
-    password_changed_at timestamp with time zone
+    password_changed_at timestamp with time zone,
+    deactivated_at timestamp with time zone
 );
 
 
@@ -331,6 +332,11 @@ CREATE TABLE public.installation_metadata (
     created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
     allow_private_network_access boolean DEFAULT false NOT NULL,
+    password_login_disabled boolean DEFAULT false NOT NULL,
+    sso_login_hint_enabled boolean DEFAULT false NOT NULL,
+    sso_prompt_none_enabled boolean DEFAULT false NOT NULL,
+    sso_auto_login_enabled boolean DEFAULT false NOT NULL,
+    sso_idp_logout_enabled boolean DEFAULT false NOT NULL,
     CONSTRAINT installation_metadata_singleton CHECK ((id = 1))
 );
 
@@ -362,6 +368,32 @@ CREATE TABLE public.organization_invite_links (
     enabled boolean DEFAULT true NOT NULL,
     created_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP,
     updated_at timestamp without time zone DEFAULT CURRENT_TIMESTAMP
+);
+
+
+--
+-- Name: organization_oidc_providers; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.organization_oidc_providers (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    organization_id uuid NOT NULL,
+    slug character varying(64) NOT NULL,
+    display_name character varying(255) NOT NULL,
+    type character varying(50) DEFAULT 'oidc'::character varying NOT NULL,
+    issuer_url text NOT NULL,
+    client_id text NOT NULL,
+    client_secret_enc text NOT NULL,
+    scopes jsonb DEFAULT '["openid", "email", "profile"]'::jsonb NOT NULL,
+    allowed_email_domains jsonb DEFAULT '[]'::jsonb NOT NULL,
+    enabled boolean DEFAULT true NOT NULL,
+    created_by uuid,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    deleted_at timestamp without time zone,
+    allowed_groups jsonb DEFAULT '[]'::jsonb NOT NULL,
+    group_role_mappings jsonb DEFAULT '{}'::jsonb NOT NULL,
+    groups_claim text DEFAULT ''::text NOT NULL
 );
 
 
@@ -946,6 +978,14 @@ ALTER TABLE ONLY public.organization_invite_links
 
 
 --
+-- Name: organization_oidc_providers organization_oidc_providers_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_oidc_providers
+    ADD CONSTRAINT organization_oidc_providers_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: organizations organizations_name_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1358,6 +1398,20 @@ CREATE INDEX idx_node_requests_state_run_at ON public.workflow_node_requests USI
 
 
 --
+-- Name: idx_oidc_providers_allowed_domains; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_oidc_providers_allowed_domains ON public.organization_oidc_providers USING gin (allowed_email_domains) WHERE (deleted_at IS NULL);
+
+
+--
+-- Name: idx_oidc_providers_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_oidc_providers_org ON public.organization_oidc_providers USING btree (organization_id) WHERE (deleted_at IS NULL);
+
+
+--
 -- Name: idx_organizations_deleted_at; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1638,6 +1692,13 @@ CREATE INDEX idx_workflows_organization_id ON public.workflows USING btree (orga
 
 
 --
+-- Name: uniq_oidc_provider_slug_per_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uniq_oidc_provider_slug_per_org ON public.organization_oidc_providers USING btree (organization_id, slug) WHERE (deleted_at IS NULL);
+
+
+--
 -- Name: unique_human_user_in_organization; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1809,6 +1870,22 @@ ALTER TABLE ONLY public.organization_invitations
 
 ALTER TABLE ONLY public.organization_invite_links
     ADD CONSTRAINT organization_invite_links_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id) ON DELETE CASCADE;
+
+
+--
+-- Name: organization_oidc_providers organization_oidc_providers_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_oidc_providers
+    ADD CONSTRAINT organization_oidc_providers_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id);
+
+
+--
+-- Name: organization_oidc_providers organization_oidc_providers_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_oidc_providers
+    ADD CONSTRAINT organization_oidc_providers_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id);
 
 
 --
@@ -2171,7 +2248,7 @@ SET row_security = off;
 --
 
 COPY public.schema_migrations (version, dirty) FROM stdin;
-20260614140634	f
+20260616140000	f
 \.
 
 

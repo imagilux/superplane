@@ -21,6 +21,7 @@ import (
 	"github.com/markbates/goth/providers/github"
 	"github.com/markbates/goth/providers/google"
 	log "github.com/sirupsen/logrus"
+	"github.com/superplanehq/superplane/pkg/authentication/sso"
 	"github.com/superplanehq/superplane/pkg/authorization"
 	"github.com/superplanehq/superplane/pkg/crypto"
 	"github.com/superplanehq/superplane/pkg/database"
@@ -29,6 +30,7 @@ import (
 	"github.com/superplanehq/superplane/pkg/models"
 	"github.com/superplanehq/superplane/pkg/utils"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 const SignupDisabledError = "signup is currently disabled"
@@ -50,6 +52,7 @@ type Handler struct {
 	blockSignup          bool
 	passwordLoginEnabled bool
 	magicCodeEnabled     bool
+	ssoRegistry          *sso.Registry
 }
 
 type ProviderConfig struct {
@@ -68,6 +71,7 @@ func NewHandler(jwtSigner *jwt.Signer, encryptor crypto.Encryptor, authService a
 		blockSignup:          blockSignup,
 		passwordLoginEnabled: passwordLoginEnabled,
 		magicCodeEnabled:     magicCodeEnabled,
+		ssoRegistry:          sso.NewRegistry(ssoDiscoveryTTL()),
 	}
 }
 
@@ -77,6 +81,19 @@ func NewHandler(jwtSigner *jwt.Signer, encryptor crypto.Encryptor, authService a
 // when the feature is disabled.
 func (a *Handler) PasswordLoginEnabled() bool {
 	return a.passwordLoginEnabled
+}
+
+// effectivePasswordLoginEnabled reports whether email/password login is currently
+// usable: the ENABLE_PASSWORD_LOGIN env must allow it AND an installation admin
+// must not have disabled it at runtime via installation settings.
+func (a *Handler) effectivePasswordLoginEnabled() bool {
+	if !a.passwordLoginEnabled {
+		return false
+	}
+	if meta, err := models.GetInstallationMetadata(); err == nil && meta.PasswordLoginDisabled {
+		return false
+	}
+	return true
 }
 
 func (a *Handler) InitializeProviders(providers map[string]ProviderConfig) {
@@ -119,6 +136,15 @@ func (a *Handler) RegisterRoutes(router *mux.Router) {
 		router.HandleFunc("/auth/magic-code/verify", a.handleMagicCodeVerify).Methods("POST")
 		router.HandleFunc("/auth/magic-code/verify", a.handleMagicLinkRedirect).Methods("GET")
 	}
+
+	//
+	// Per-organization OIDC SSO routes, registered for both dev and prod and
+	// before the /auth/{provider} catch-all below (they have distinct, longer
+	// path shapes, so they never collide with it).
+	//
+	router.HandleFunc("/auth/sso/providers", a.handleSSOProviderLookup).Methods("GET")
+	router.HandleFunc("/auth/sso/{orgId}/{providerSlug}/callback", a.handleSSOCallback).Methods("GET")
+	router.HandleFunc("/auth/sso/{orgId}/{providerSlug}", a.handleSSOLogin).Methods("GET")
 
 	//
 	// If we are running the application locally,
@@ -301,7 +327,16 @@ func (a *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 
 	ClearAccountCookie(w, r)
 
-	http.Redirect(w, r, "/login", http.StatusTemporaryRedirect)
+	// Land on the login page with logged_out=1 so the page does not immediately
+	// auto-login the user back in (the auto-login effect skips this marker). When
+	// the installation opts into IdP logout, redirect through the IdP's
+	// end-session endpoint instead, which then returns to the same landing.
+	target := "/login?logged_out=1"
+	if idpURL := a.idpLogoutURL(r); idpURL != "" {
+		target = idpURL
+	}
+
+	http.Redirect(w, r, target, http.StatusTemporaryRedirect)
 }
 
 func (a *Handler) handleAuthConfig(w http.ResponseWriter, r *http.Request) {
@@ -312,16 +347,54 @@ func (a *Handler) handleAuthConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Strings(providerNames)
 
+	ssoEnabled := false
+	if enabled, err := models.ExistsEnabledOIDCProvider(); err == nil {
+		ssoEnabled = enabled
+	}
+
+	// SSO login-flow options, set by an installation admin in Identity settings.
+	// Exposed so the login surface knows whether to forward a login_hint and (for
+	// the silent-login sequence) whether prompt=none is permitted.
+	ssoLoginHintEnabled := false
+	ssoPromptNoneEnabled := false
+	ssoAutoLoginEnabled := false
+	if meta, err := models.GetInstallationMetadata(); err == nil {
+		ssoLoginHintEnabled = meta.SSOLoginHintEnabled
+		ssoPromptNoneEnabled = meta.SSOPromptNoneEnabled
+		ssoAutoLoginEnabled = meta.SSOAutoLoginEnabled
+	}
+
+	// Unattended auto-login needs an unambiguous target: it is offered only when
+	// enabled, prompt=none is permitted, and exactly one SSO provider exists. The
+	// login surface redirects here (with prompt=none) on load; an empty URL means
+	// "do not auto-login".
+	ssoAutoLoginURL := ""
+	if ssoAutoLoginEnabled && ssoPromptNoneEnabled {
+		if p, err := models.SoleEnabledOIDCProvider(); err == nil && p != nil {
+			ssoAutoLoginURL = "/auth/sso/" + p.OrganizationID.String() + "/" + p.Slug
+		}
+	}
+
 	response := struct {
 		Providers            []string `json:"providers"`
 		PasswordLoginEnabled bool     `json:"passwordLoginEnabled"`
 		SignupEnabled        bool     `json:"signupEnabled"`
 		MagicCodeEnabled     bool     `json:"magicCodeEnabled"`
+		SSOEnabled           bool     `json:"ssoEnabled"`
+		SSOLoginHintEnabled  bool     `json:"ssoLoginHintEnabled"`
+		SSOPromptNoneEnabled bool     `json:"ssoPromptNoneEnabled"`
+		SSOAutoLoginEnabled  bool     `json:"ssoAutoLoginEnabled"`
+		SSOAutoLoginURL      string   `json:"ssoAutoLoginUrl"`
 	}{
 		Providers:            providerNames,
-		PasswordLoginEnabled: a.passwordLoginEnabled,
+		PasswordLoginEnabled: a.effectivePasswordLoginEnabled(),
 		SignupEnabled:        !a.blockSignup,
 		MagicCodeEnabled:     a.magicCodeEnabled,
+		SSOEnabled:           ssoEnabled,
+		SSOLoginHintEnabled:  ssoLoginHintEnabled,
+		SSOPromptNoneEnabled: ssoPromptNoneEnabled,
+		SSOAutoLoginEnabled:  ssoAutoLoginEnabled,
+		SSOAutoLoginURL:      ssoAutoLoginURL,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -332,7 +405,7 @@ func (a *Handler) handleAuthConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Handler) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
-	if !a.passwordLoginEnabled {
+	if !a.effectivePasswordLoginEnabled() {
 		http.Error(w, "Password login is not enabled", http.StatusForbidden)
 		return
 	}
@@ -354,6 +427,12 @@ func (a *Handler) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 	account, err := models.FindAccountByEmail(email)
 	if err != nil {
 		log.Warnf("Login attempt with invalid email: %s", email)
+		http.Error(w, "Invalid email or password", http.StatusUnauthorized)
+		return
+	}
+
+	if account.IsDeactivated() {
+		log.Warnf("Login attempt for deactivated account: %s", email)
 		http.Error(w, "Invalid email or password", http.StatusUnauthorized)
 		return
 	}
@@ -395,7 +474,7 @@ func (a *Handler) handlePasswordLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *Handler) handlePasswordSignup(w http.ResponseWriter, r *http.Request) {
-	if !a.passwordLoginEnabled {
+	if !a.effectivePasswordLoginEnabled() {
 		http.Error(w, "Password login is not enabled", http.StatusForbidden)
 		return
 	}
@@ -721,6 +800,10 @@ func (a *Handler) checkSignupPolicy(email string, r *http.Request) error {
 func (a *Handler) findOrCreateAccountForMagicCode(email string, r *http.Request) (*models.Account, error) {
 	account, err := models.FindAccountByEmail(email)
 	if err == nil {
+		if account.IsDeactivated() {
+			log.Warnf("Magic-code login attempt for deactivated account: %s", email)
+			return nil, errAccountError
+		}
 		return account, nil
 	}
 	if !errors.Is(err, gorm.ErrRecordNotFound) {
@@ -850,6 +933,9 @@ func (a *Handler) findOrCreateAccountForProvider(gothUser goth.User, allowSignup
 	account, err := models.FindAccountByProvider(gothUser.Provider, gothUser.UserID)
 
 	if err == nil {
+		if account.IsDeactivated() {
+			return nil, fmt.Errorf("account is deactivated")
+		}
 		if account.Email != utils.NormalizeEmail(gothUser.Email) {
 			log.Infof("Updating email for account %s from %s to %s", account.ID, account.Email, gothUser.Email)
 			err = account.UpdateEmailForProvider(gothUser.Email, gothUser.Provider, gothUser.UserID)
@@ -868,6 +954,9 @@ func (a *Handler) findOrCreateAccountForProvider(gothUser goth.User, allowSignup
 
 	account, err = models.FindAccountByEmail(gothUser.Email)
 	if err == nil {
+		if account.IsDeactivated() {
+			return nil, fmt.Errorf("account is deactivated")
+		}
 		return account, nil
 	}
 
@@ -909,47 +998,50 @@ func allowSignupFromRequest(r *http.Request) bool {
 }
 
 func updateAccountProviders(encryptor crypto.Encryptor, account *models.Account, gothUser goth.User) error {
-	accessToken, err := encryptor.Encrypt(context.Background(), []byte(gothUser.AccessToken), []byte(gothUser.Email))
+	email := []byte(gothUser.Email)
+	accessToken, err := encryptor.Encrypt(context.Background(), []byte(gothUser.AccessToken), email)
 	if err != nil {
 		return err
 	}
 
-	accountProvider, err := account.FindAccountProviderByID(gothUser.Provider, gothUser.UserID)
+	// Encrypt the refresh token at rest too. It is at least as sensitive as the
+	// access token (it mints fresh ones at the IdP), and OIDC providers configured
+	// with offline_access do issue one. Same scheme as the access token: AES-GCM
+	// with the account email as associated data, base64-encoded for the text column.
+	refreshToken, err := encryptor.Encrypt(context.Background(), []byte(gothUser.RefreshToken), email)
+	if err != nil {
+		return err
+	}
 
-	//
-	// If we already have an account provider for this provider and provider ID, we just update it.
-	//
-	if err == nil {
-		accountProvider.AccessToken = base64.StdEncoding.EncodeToString(accessToken)
-		accountProvider.Username = gothUser.NickName
-		accountProvider.Email = utils.NormalizeEmail(gothUser.Email)
-		accountProvider.Name = gothUser.Name
-		accountProvider.AvatarURL = gothUser.AvatarURL
-		accountProvider.RefreshToken = gothUser.RefreshToken
-		if !gothUser.ExpiresAt.IsZero() {
-			accountProvider.TokenExpiresAt = &gothUser.ExpiresAt
-		}
-
-		return database.Conn().Save(accountProvider).Error
+	accountProvider := &models.AccountProvider{
+		AccountID:    account.ID,
+		Provider:     gothUser.Provider,
+		ProviderID:   gothUser.UserID,
+		Username:     gothUser.NickName,
+		Email:        utils.NormalizeEmail(gothUser.Email),
+		Name:         gothUser.Name,
+		AvatarURL:    gothUser.AvatarURL,
+		AccessToken:  base64.StdEncoding.EncodeToString(accessToken),
+		RefreshToken: base64.StdEncoding.EncodeToString(refreshToken),
+	}
+	if !gothUser.ExpiresAt.IsZero() {
+		accountProvider.TokenExpiresAt = &gothUser.ExpiresAt
 	}
 
 	//
-	// Otherwise, we create a new account provider.
+	// Upsert keyed on the (account_id, provider) unique constraint: an account has
+	// at most one link per provider, so a re-login refreshes that row in place,
+	// including provider_id -- which changes when a provider is re-pointed to a
+	// different IdP, or the IdP rotates the subject. A plain insert there would
+	// violate account_providers_account_id_provider_key.
 	//
-	accountProvider = &models.AccountProvider{
-		AccountID:      account.ID,
-		Provider:       gothUser.Provider,
-		ProviderID:     gothUser.UserID,
-		Username:       gothUser.NickName,
-		Email:          utils.NormalizeEmail(gothUser.Email),
-		Name:           gothUser.Name,
-		AvatarURL:      gothUser.AvatarURL,
-		AccessToken:    base64.StdEncoding.EncodeToString(accessToken),
-		RefreshToken:   gothUser.RefreshToken,
-		TokenExpiresAt: &gothUser.ExpiresAt,
-	}
-
-	return database.Conn().Create(accountProvider).Error
+	return database.Conn().Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "account_id"}, {Name: "provider"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"provider_id", "username", "email", "name", "avatar_url",
+			"access_token", "refresh_token", "token_expires_at", "updated_at",
+		}),
+	}).Create(accountProvider).Error
 }
 
 func getRedirectURL(r *http.Request) string {
@@ -978,7 +1070,10 @@ func isValidRedirectURL(redirectURL string) bool {
 		return false
 	}
 
-	if len(redirectURL) > 1 && redirectURL[1] == '/' {
+	// Reject protocol-relative targets. "//host" is the obvious form; "/\host" is
+	// the same attack via a backslash, which browsers normalize to "/", so
+	// "/\evil.com" would navigate to //evil.com. Treat both second characters alike.
+	if len(redirectURL) > 1 && (redirectURL[1] == '/' || redirectURL[1] == '\\') {
 		return false
 	}
 

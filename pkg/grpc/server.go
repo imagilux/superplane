@@ -23,6 +23,7 @@ import (
 	pbGroups "github.com/superplanehq/superplane/pkg/protos/groups"
 	integrationpb "github.com/superplanehq/superplane/pkg/protos/integrations"
 	mepb "github.com/superplanehq/superplane/pkg/protos/me"
+	pbOIDCProviders "github.com/superplanehq/superplane/pkg/protos/oidc_providers"
 	organizationPb "github.com/superplanehq/superplane/pkg/protos/organizations"
 	pbRoles "github.com/superplanehq/superplane/pkg/protos/roles"
 	secretPb "github.com/superplanehq/superplane/pkg/protos/secrets"
@@ -162,6 +163,9 @@ func RunServer(
 
 	serviceAccountsService := NewServiceAccountsService(authService)
 	pbServiceAccounts.RegisterServiceAccountsServer(grpcServer, serviceAccountsService)
+
+	oidcProvidersService := NewOIDCProvidersService(encryptor)
+	pbOIDCProviders.RegisterOIDCProvidersServer(grpcServer, oidcProvidersService)
 
 	pbAgents.RegisterAgentsServer(grpcServer, NewAgentsService(agentService))
 

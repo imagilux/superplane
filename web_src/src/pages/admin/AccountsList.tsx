@@ -9,13 +9,14 @@ import AdminPagination from "./AdminPagination";
 import AdminSearchHeader from "./AdminSearchHeader";
 import ConfirmAdminDialog from "./ConfirmAdminDialog";
 import { SortableHeader, type SortDirection } from "./SortableHeader";
-import { startImpersonation, toggleAdmin } from "./useAccountActions";
+import { startImpersonation, toggleActivation, toggleAdmin } from "./useAccountActions";
 
 interface AdminAccount {
   id: string;
   name: string;
   email: string;
   installation_admin: boolean;
+  deactivated: boolean;
   created_at?: string;
 }
 
@@ -27,20 +28,24 @@ interface AccountsTableProps {
   accounts: AdminAccount[];
   currentAccountId?: string;
   togglingAccountId: string | null;
+  activatingAccountId: string | null;
   sortBy: SortField;
   sortDirection: SortDirection;
   onSort: (field: SortField) => void;
   onPromoteDemote: (account: AdminAccount) => void;
+  onDeactivateReactivate: (account: AdminAccount) => void;
 }
 
 function AccountsTable({
   accounts,
   currentAccountId,
   togglingAccountId,
+  activatingAccountId,
   sortBy,
   sortDirection,
   onSort,
   onPromoteDemote,
+  onDeactivateReactivate,
 }: AccountsTableProps) {
   return (
     <div className="bg-white rounded-md shadow-sm outline outline-slate-950/10 overflow-hidden">
@@ -79,7 +84,9 @@ function AccountsTable({
               acc={acc}
               isSelf={acc.id === currentAccountId}
               toggling={togglingAccountId === acc.id}
+              activating={activatingAccountId === acc.id}
               onPromoteDemote={() => onPromoteDemote(acc)}
+              onDeactivateReactivate={() => onDeactivateReactivate(acc)}
               impersonateButton={
                 <Button variant="outline" size="sm" onClick={() => startImpersonation(acc.id)}>
                   <span className="flex items-center gap-1">
@@ -104,7 +111,9 @@ const AccountsList: React.FC = () => {
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(true);
   const [toggling, setToggling] = useState<string | null>(null);
+  const [activating, setActivating] = useState<string | null>(null);
   const [confirmTarget, setConfirmTarget] = useState<AdminAccount | null>(null);
+  const [confirmDeactivateTarget, setConfirmDeactivateTarget] = useState<AdminAccount | null>(null);
   const [sortBy, setSortBy] = useState<SortField>("created_at");
   const [sortDirection, setSortDirection] = useState<SortDirection>("desc");
 
@@ -143,6 +152,23 @@ const AccountsList: React.FC = () => {
     setToggling(null);
   };
 
+  const onToggleActivation = async (acc: AdminAccount) => {
+    setConfirmDeactivateTarget(null);
+    setActivating(acc.id);
+    await toggleActivation(acc, () => fetchAccounts(search, offset, sortBy, sortDirection));
+    setActivating(null);
+  };
+
+  // Deactivate is high-risk (the account loses sign-in) so it goes through the confirm
+  // dialog; reactivate is low-risk and runs directly, matching how impersonate/promote differ.
+  const onDeactivateReactivate = (acc: AdminAccount) => {
+    if (acc.deactivated) {
+      onToggleActivation(acc);
+    } else {
+      setConfirmDeactivateTarget(acc);
+    }
+  };
+
   const handleSort = (field: SortField) => {
     if (field === sortBy) {
       setSortDirection((prev) => (prev === "asc" ? "desc" : "asc"));
@@ -170,6 +196,15 @@ const AccountsList: React.FC = () => {
         accountEmail={confirmTarget?.email ?? ""}
         isPromoting={confirmTarget != null && !confirmTarget.installation_admin}
       />
+      <ConfirmAdminDialog
+        mode="deactivate"
+        open={confirmDeactivateTarget !== null}
+        onClose={() => setConfirmDeactivateTarget(null)}
+        onConfirm={() => confirmDeactivateTarget && onToggleActivation(confirmDeactivateTarget)}
+        accountName={confirmDeactivateTarget?.name ?? ""}
+        accountEmail={confirmDeactivateTarget?.email ?? ""}
+        isPromoting={false}
+      />
       <AdminSearchHeader
         title="Accounts"
         subtitle={`${total} account${total !== 1 ? "s" : ""}`}
@@ -187,10 +222,12 @@ const AccountsList: React.FC = () => {
             accounts={accounts}
             currentAccountId={currentAccount?.id}
             togglingAccountId={toggling}
+            activatingAccountId={activating}
             sortBy={sortBy}
             sortDirection={sortDirection}
             onSort={handleSort}
             onPromoteDemote={setConfirmTarget}
+            onDeactivateReactivate={onDeactivateReactivate}
           />
           <AdminPagination
             offset={offset}

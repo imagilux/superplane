@@ -33,32 +33,52 @@ type paginatedResponse struct {
 	Offset int   `json:"offset"`
 }
 
+type lockedOutAccount struct {
+	ID    string `json:"id"`
+	Email string `json:"email"`
+	Name  string `json:"name"`
+}
+
 type installationSettingsResponse struct {
-	AllowPrivateNetworkAccess  bool     `json:"allow_private_network_access"`
-	EffectiveBlockedHTTPHosts  []string `json:"effective_blocked_http_hosts"`
-	EffectivePrivateIPRanges   []string `json:"effective_private_ip_ranges"`
-	BlockedHTTPHostsOverridden bool     `json:"blocked_http_hosts_overridden"`
-	PrivateIPRangesOverridden  bool     `json:"private_ip_ranges_overridden"`
-	SMTPEnabled                bool     `json:"smtp_enabled"`
-	SMTPHost                   string   `json:"smtp_host"`
-	SMTPPort                   int      `json:"smtp_port"`
-	SMTPUsername               string   `json:"smtp_username"`
-	SMTPFromName               string   `json:"smtp_from_name"`
-	SMTPFromEmail              string   `json:"smtp_from_email"`
-	SMTPUseTLS                 bool     `json:"smtp_use_tls"`
-	SMTPPasswordConfigured     bool     `json:"smtp_password_configured"`
+	AllowPrivateNetworkAccess   bool               `json:"allow_private_network_access"`
+	PasswordLoginDisabled       bool               `json:"password_login_disabled"`
+	PasswordLoginDisableAllowed bool               `json:"password_login_disable_allowed"`
+	PasswordLoginDisableReason  string             `json:"password_login_disable_reason,omitempty"`
+	PasswordOnlyAccounts        []lockedOutAccount `json:"password_only_accounts"`
+	SSOLoginHintEnabled         bool               `json:"sso_login_hint_enabled"`
+	SSOPromptNoneEnabled        bool               `json:"sso_prompt_none_enabled"`
+	SSOAutoLoginEnabled         bool               `json:"sso_auto_login_enabled"`
+	SSOIdPLogoutEnabled         bool               `json:"sso_idp_logout_enabled"`
+	EffectiveBlockedHTTPHosts   []string           `json:"effective_blocked_http_hosts"`
+	EffectivePrivateIPRanges    []string           `json:"effective_private_ip_ranges"`
+	BlockedHTTPHostsOverridden  bool               `json:"blocked_http_hosts_overridden"`
+	PrivateIPRangesOverridden   bool               `json:"private_ip_ranges_overridden"`
+	SMTPEnabled                 bool               `json:"smtp_enabled"`
+	SMTPHost                    string             `json:"smtp_host"`
+	SMTPPort                    int                `json:"smtp_port"`
+	SMTPUsername                string             `json:"smtp_username"`
+	SMTPFromName                string             `json:"smtp_from_name"`
+	SMTPFromEmail               string             `json:"smtp_from_email"`
+	SMTPUseTLS                  bool               `json:"smtp_use_tls"`
+	SMTPPasswordConfigured      bool               `json:"smtp_password_configured"`
 }
 
 type installationSettingsRequest struct {
-	AllowPrivateNetworkAccess *bool   `json:"allow_private_network_access"`
-	SMTPEnabled               *bool   `json:"smtp_enabled"`
-	SMTPHost                  *string `json:"smtp_host"`
-	SMTPPort                  *int    `json:"smtp_port"`
-	SMTPUsername              *string `json:"smtp_username"`
-	SMTPPassword              *string `json:"smtp_password"`
-	SMTPFromName              *string `json:"smtp_from_name"`
-	SMTPFromEmail             *string `json:"smtp_from_email"`
-	SMTPUseTLS                *bool   `json:"smtp_use_tls"`
+	AllowPrivateNetworkAccess   *bool   `json:"allow_private_network_access"`
+	PasswordLoginDisabled       *bool   `json:"password_login_disabled"`
+	DeactivateLockedOutAccounts *bool   `json:"deactivate_locked_out_accounts"`
+	SSOLoginHintEnabled         *bool   `json:"sso_login_hint_enabled"`
+	SSOPromptNoneEnabled        *bool   `json:"sso_prompt_none_enabled"`
+	SSOAutoLoginEnabled         *bool   `json:"sso_auto_login_enabled"`
+	SSOIdPLogoutEnabled         *bool   `json:"sso_idp_logout_enabled"`
+	SMTPEnabled                 *bool   `json:"smtp_enabled"`
+	SMTPHost                    *string `json:"smtp_host"`
+	SMTPPort                    *int    `json:"smtp_port"`
+	SMTPUsername                *string `json:"smtp_username"`
+	SMTPPassword                *string `json:"smtp_password"`
+	SMTPFromName                *string `json:"smtp_from_name"`
+	SMTPFromEmail               *string `json:"smtp_from_email"`
+	SMTPUseTLS                  *bool   `json:"smtp_use_tls"`
 }
 
 func parsePagination(r *http.Request) (search string, limit, offset int) {
@@ -84,7 +104,8 @@ func parseSorting(r *http.Request) (sortBy, sortDirection string) {
 }
 
 func (s *Server) adminGetInstallationNetworkSettings(w http.ResponseWriter, r *http.Request) {
-	response, err := s.buildInstallationSettingsResponse()
+	account, _ := middleware.GetAccountFromContext(r.Context())
+	response, err := s.buildInstallationSettingsResponse(account)
 	if err != nil {
 		log.Errorf("admin: failed to load installation settings: %v", err)
 		http.Error(w, "Failed to load installation settings", http.StatusInternalServerError)
@@ -106,8 +127,12 @@ func (s *Server) adminUpdateInstallationNetworkSettings(w http.ResponseWriter, r
 		log.Errorf("admin: failed to update installation settings: %v", err)
 
 		statusCode := http.StatusInternalServerError
-		if errors.Is(err, errInvalidInstallationSettingsRequest) {
+		switch {
+		case errors.Is(err, errInvalidInstallationSettingsRequest):
 			statusCode = http.StatusBadRequest
+		case errors.Is(err, errPasswordLoginDisableLockout),
+			errors.Is(err, errPasswordLoginDisableNeedsConfirmation):
+			statusCode = http.StatusConflict
 		}
 
 		http.Error(w, err.Error(), statusCode)
@@ -118,7 +143,8 @@ func (s *Server) adminUpdateInstallationNetworkSettings(w http.ResponseWriter, r
 		s.registry.HTTPContext().InvalidatePolicyCache()
 	}
 
-	response, err := s.buildInstallationSettingsResponse()
+	account, _ := middleware.GetAccountFromContext(r.Context())
+	response, err := s.buildInstallationSettingsResponse(account)
 	if err != nil {
 		log.Errorf("admin: failed to load updated installation settings: %v", err)
 		http.Error(w, "Failed to update installation settings", http.StatusInternalServerError)
@@ -130,18 +156,123 @@ func (s *Server) adminUpdateInstallationNetworkSettings(w http.ResponseWriter, r
 
 var errInvalidInstallationSettingsRequest = errors.New("invalid installation settings request")
 
+var errPasswordLoginDisableLockout = errors.New(
+	"can't disable password login: your account has no SSO login, so you'd lock yourself out " +
+		"(only installation admins can re-enable it, and password login would be off). Sign in once via " +
+		"your organization's SSO to link this account, or in Installation Admin → Accounts promote an " +
+		"SSO-capable account to admin and disable this one, then try again.",
+)
+
+var errPasswordLoginDisableNeedsConfirmation = errors.New(
+	"disabling password login will lock out accounts that can only sign in with a password; " +
+		"resend with deactivate_locked_out_accounts=true to deactivate them.",
+)
+
+// guardPasswordLoginDisable refuses to turn email/password login off when the
+// installation admin making the change has no non-password way back in. Only
+// installation admins can re-enable the setting, and once it is off they can
+// authenticate solely via SSO/OAuth — so a password-only admin would be locked
+// out. Turning the feature back on is never guarded.
+func (s *Server) guardPasswordLoginDisable(ctx context.Context) error {
+	metadata, err := models.GetInstallationMetadata()
+	if err != nil {
+		return err
+	}
+
+	// Already off — this request introduces no new lockout.
+	if metadata.PasswordLoginDisabled {
+		return nil
+	}
+
+	account, ok := middleware.GetAccountFromContext(ctx)
+	if !ok || account == nil {
+		return errPasswordLoginDisableLockout
+	}
+
+	canSSO, err := account.CanLoginWithoutPassword()
+	if err != nil {
+		return err
+	}
+	if !canSSO {
+		return errPasswordLoginDisableLockout
+	}
+
+	return nil
+}
+
 func (s *Server) updateInstallationSettings(ctx context.Context, req installationSettingsRequest) error {
+	var lockedOutAccountIDs []string
+
+	if req.PasswordLoginDisabled != nil && *req.PasswordLoginDisabled {
+		if err := s.guardPasswordLoginDisable(ctx); err != nil {
+			return err
+		}
+
+		// Disabling password login strands accounts that can only sign in with a
+		// password. On the off->on transition (the guard no-ops when already off),
+		// require the admin to confirm, then deactivate them in the same
+		// transaction so none are left silently unable to log in.
+		meta, err := models.GetInstallationMetadata()
+		if err != nil {
+			return err
+		}
+		if !meta.PasswordLoginDisabled {
+			actingID := ""
+			if account, ok := middleware.GetAccountFromContext(ctx); ok && account != nil {
+				actingID = account.ID.String()
+			}
+
+			stranded, err := models.FindActivePasswordOnlyAccounts(actingID)
+			if err != nil {
+				return err
+			}
+			if len(stranded) > 0 {
+				if req.DeactivateLockedOutAccounts == nil || !*req.DeactivateLockedOutAccounts {
+					return errPasswordLoginDisableNeedsConfirmation
+				}
+				for _, acc := range stranded {
+					lockedOutAccountIDs = append(lockedOutAccountIDs, acc.ID.String())
+				}
+			}
+		}
+	}
+
 	return database.Conn().Transaction(func(tx *gorm.DB) error {
-		if req.AllowPrivateNetworkAccess != nil {
+		if req.AllowPrivateNetworkAccess != nil || req.PasswordLoginDisabled != nil ||
+			req.SSOLoginHintEnabled != nil || req.SSOPromptNoneEnabled != nil || req.SSOAutoLoginEnabled != nil ||
+			req.SSOIdPLogoutEnabled != nil {
 			metadata, err := models.GetInstallationMetadataInTransaction(tx)
 			if err != nil {
 				return err
 			}
 
-			metadata.AllowPrivateNetworkAccess = *req.AllowPrivateNetworkAccess
+			if req.AllowPrivateNetworkAccess != nil {
+				metadata.AllowPrivateNetworkAccess = *req.AllowPrivateNetworkAccess
+			}
+			if req.PasswordLoginDisabled != nil {
+				metadata.PasswordLoginDisabled = *req.PasswordLoginDisabled
+			}
+			if req.SSOLoginHintEnabled != nil {
+				metadata.SSOLoginHintEnabled = *req.SSOLoginHintEnabled
+			}
+			if req.SSOPromptNoneEnabled != nil {
+				metadata.SSOPromptNoneEnabled = *req.SSOPromptNoneEnabled
+			}
+			if req.SSOAutoLoginEnabled != nil {
+				metadata.SSOAutoLoginEnabled = *req.SSOAutoLoginEnabled
+			}
+			if req.SSOIdPLogoutEnabled != nil {
+				metadata.SSOIdPLogoutEnabled = *req.SSOIdPLogoutEnabled
+			}
 			metadata.UpdatedAt = time.Now()
 
 			if err := models.UpdateInstallationMetadataInTransaction(tx, metadata); err != nil {
+				return err
+			}
+		}
+
+		for _, id := range lockedOutAccountIDs {
+			if err := models.DeactivateInTransaction(tx, id, time.Now()); err != nil {
 				return err
 			}
 		}
@@ -154,18 +285,60 @@ func (s *Server) updateInstallationSettings(ctx context.Context, req installatio
 	})
 }
 
-func (s *Server) buildInstallationSettingsResponse() (installationSettingsResponse, error) {
+func (s *Server) buildInstallationSettingsResponse(account *models.Account) (installationSettingsResponse, error) {
 	policy, err := networkpolicy.ResolveHTTPPolicy()
 	if err != nil {
 		return installationSettingsResponse{}, err
 	}
 
+	metadata, err := models.GetInstallationMetadata()
+	if err != nil {
+		return installationSettingsResponse{}, err
+	}
+
 	response := installationSettingsResponse{
-		AllowPrivateNetworkAccess:  policy.AllowPrivateNetworkAccess,
-		EffectiveBlockedHTTPHosts:  policy.BlockedHosts,
-		EffectivePrivateIPRanges:   policy.PrivateIPRanges,
-		BlockedHTTPHostsOverridden: policy.BlockedHostsOverridden,
-		PrivateIPRangesOverridden:  policy.PrivateIPRangesOverridden,
+		AllowPrivateNetworkAccess:   policy.AllowPrivateNetworkAccess,
+		PasswordLoginDisabled:       metadata.PasswordLoginDisabled,
+		PasswordLoginDisableAllowed: true,
+		SSOLoginHintEnabled:         metadata.SSOLoginHintEnabled,
+		SSOPromptNoneEnabled:        metadata.SSOPromptNoneEnabled,
+		SSOAutoLoginEnabled:         metadata.SSOAutoLoginEnabled,
+		SSOIdPLogoutEnabled:         metadata.SSOIdPLogoutEnabled,
+		EffectiveBlockedHTTPHosts:   policy.BlockedHosts,
+		EffectivePrivateIPRanges:    policy.PrivateIPRanges,
+		BlockedHTTPHostsOverridden:  policy.BlockedHostsOverridden,
+		PrivateIPRangesOverridden:   policy.PrivateIPRangesOverridden,
+	}
+
+	// Gate the "disable password login" toggle for the current admin: if turning
+	// it on would leave them with no non-password way back in, the UI greys it
+	// out with guidance instead of letting them lock themselves out.
+	if !metadata.PasswordLoginDisabled {
+		canSSO := false
+		actingID := ""
+		if account != nil {
+			actingID = account.ID.String()
+			if ok, providerErr := account.CanLoginWithoutPassword(); providerErr == nil {
+				canSSO = ok
+			}
+		}
+		if !canSSO {
+			response.PasswordLoginDisableAllowed = false
+			response.PasswordLoginDisableReason = errPasswordLoginDisableLockout.Error()
+		}
+
+		// Surface password-only accounts that would be stranded by disabling
+		// password login, so the UI can list them and confirm before they are
+		// deactivated.
+		if stranded, strandedErr := models.FindActivePasswordOnlyAccounts(actingID); strandedErr == nil {
+			for _, acc := range stranded {
+				response.PasswordOnlyAccounts = append(response.PasswordOnlyAccounts, lockedOutAccount{
+					ID:    acc.ID.String(),
+					Email: acc.Email,
+					Name:  acc.Name,
+				})
+			}
+		}
 	}
 
 	emailSettings, err := models.FindEmailSettings(models.EmailProviderSMTP)
@@ -299,6 +472,7 @@ func (s *Server) adminListAccounts(w http.ResponseWriter, r *http.Request) {
 		Name              string  `json:"name"`
 		Email             string  `json:"email"`
 		InstallationAdmin bool    `json:"installation_admin"`
+		Deactivated       bool    `json:"deactivated"`
 		CreatedAt         *string `json:"created_at,omitempty"`
 	}
 
@@ -309,6 +483,7 @@ func (s *Server) adminListAccounts(w http.ResponseWriter, r *http.Request) {
 			Name:              a.Name,
 			Email:             a.Email,
 			InstallationAdmin: a.IsInstallationAdmin(),
+			Deactivated:       a.IsDeactivated(),
 		}
 
 		if a.CreatedAt != nil {
@@ -694,6 +869,83 @@ func (s *Server) demoteAdmin(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "demoted"})
+}
+
+// deactivateAccount disables an account (reversible). A deactivated account is
+// then rejected at login and on every authenticated request.
+func (s *Server) deactivateAccount(w http.ResponseWriter, r *http.Request) {
+	admin, ok := middleware.GetAccountFromContext(r.Context())
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	targetID := mux.Vars(r)["accountId"]
+
+	// Prevent self-deactivation — an admin must not lock themselves out.
+	if admin.ID.String() == targetID {
+		http.Error(w, "Cannot deactivate yourself", http.StatusBadRequest)
+		return
+	}
+
+	target, err := models.FindAccountByID(targetID)
+	if err != nil {
+		http.Error(w, "Account not found", http.StatusNotFound)
+		return
+	}
+
+	if err := models.Deactivate(targetID, time.Now()); err != nil {
+		log.Errorf("admin: failed to deactivate %s: %v", targetID, err)
+		http.Error(w, "Failed to deactivate account", http.StatusInternalServerError)
+		return
+	}
+
+	log.WithFields(log.Fields{
+		"admin_account_id":  admin.ID.String(),
+		"admin_email":       admin.Email,
+		"target_account_id": target.ID.String(),
+		"target_email":      target.Email,
+		"action":            "deactivate_account",
+		"client_ip":         r.RemoteAddr,
+	}).Info("account deactivated")
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "deactivated"})
+}
+
+// reactivateAccount re-enables a previously deactivated account.
+func (s *Server) reactivateAccount(w http.ResponseWriter, r *http.Request) {
+	admin, ok := middleware.GetAccountFromContext(r.Context())
+	if !ok {
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	targetID := mux.Vars(r)["accountId"]
+
+	target, err := models.FindAccountByID(targetID)
+	if err != nil {
+		http.Error(w, "Account not found", http.StatusNotFound)
+		return
+	}
+
+	if err := models.Reactivate(targetID); err != nil {
+		log.Errorf("admin: failed to reactivate %s: %v", targetID, err)
+		http.Error(w, "Failed to reactivate account", http.StatusInternalServerError)
+		return
+	}
+
+	log.WithFields(log.Fields{
+		"admin_account_id":  admin.ID.String(),
+		"admin_email":       admin.Email,
+		"target_account_id": target.ID.String(),
+		"target_email":      target.Email,
+		"action":            "reactivate_account",
+		"client_ip":         r.RemoteAddr,
+	}).Info("account reactivated")
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "reactivated"})
 }
 
 // adminEnableOrgExperimentalFeature toggles an experimental feature on for

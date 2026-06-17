@@ -1,0 +1,469 @@
+package authentication
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"testing"
+	"time"
+
+	"github.com/gorilla/mux"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/superplanehq/superplane/pkg/authentication/sso"
+	"github.com/superplanehq/superplane/pkg/authorization"
+	"github.com/superplanehq/superplane/pkg/jwt"
+	"github.com/superplanehq/superplane/pkg/models"
+	"github.com/superplanehq/superplane/test/support"
+)
+
+func setupSSO(t *testing.T) (*Handler, *support.ResourceRegistry, *support.MockOIDCProvider, string, string, *models.OrganizationOIDCProvider) {
+	r := support.Setup(t)
+	t.Setenv("BASE_URL", "http://localhost:8000")
+	mock := support.NewMockOIDCProvider(t, "test-client")
+
+	provider := models.NewOIDCProvider(r.Organization.ID, nil, "idp", "Test IdP", "", mock.Issuer, "test-client", nil, []string{"example.com"}, true)
+	require.NoError(t, provider.SetClientSecret(context.Background(), r.Encryptor, "test-secret"))
+	require.NoError(t, provider.Create())
+
+	h := NewHandler(jwt.NewSigner("test-secret"), r.Encryptor, r.AuthService, "test", "/templates", false, false, false)
+	return h, r, mock, r.Organization.ID.String(), "idp", provider
+}
+
+func doSSOLogin(t *testing.T, h *Handler, orgID, slug, redirect string) (string, string, *http.Cookie) {
+	target := "/auth/sso/" + orgID + "/" + slug
+	if redirect != "" {
+		target += "?redirect=" + url.QueryEscape(redirect)
+	}
+	req := mux.SetURLVars(httptest.NewRequest("GET", target, nil), map[string]string{"orgId": orgID, "providerSlug": slug})
+	rec := httptest.NewRecorder()
+	h.handleSSOLogin(rec, req)
+
+	require.Equal(t, http.StatusTemporaryRedirect, rec.Code, "login should redirect to the IdP authorize endpoint")
+	loc, err := url.Parse(rec.Header().Get("Location"))
+	require.NoError(t, err)
+	state := loc.Query().Get("state")
+	nonce := loc.Query().Get("nonce")
+	require.NotEmpty(t, state)
+	require.NotEmpty(t, nonce)
+
+	var cookie *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == sso.StateCookieName {
+			cookie = c
+		}
+	}
+	require.NotNil(t, cookie, "state cookie must be set on login")
+	return state, nonce, cookie
+}
+
+func doSSOCallback(h *Handler, orgID, slug, code, state string, cookie *http.Cookie) *httptest.ResponseRecorder {
+	target := "/auth/sso/" + orgID + "/" + slug + "/callback?code=" + url.QueryEscape(code) + "&state=" + url.QueryEscape(state)
+	req := mux.SetURLVars(httptest.NewRequest("GET", target, nil), map[string]string{"orgId": orgID, "providerSlug": slug})
+	if cookie != nil {
+		req.AddCookie(cookie)
+	}
+	rec := httptest.NewRecorder()
+	h.handleSSOCallback(rec, req)
+	return rec
+}
+
+func hasCookie(rec *httptest.ResponseRecorder, name string) bool {
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == name && c.Value != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func hasRole(roles []*authorization.RoleDefinition, name string) bool {
+	for _, role := range roles {
+		if role.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func TestSSOFlow_HappyPath(t *testing.T) {
+	h, r, mock, orgID, slug, provider := setupSSO(t)
+
+	state, nonce, cookie := doSSOLogin(t, h, orgID, slug, "/dashboard")
+
+	code := "code-ok"
+	mock.RegisterCode(code, support.MockIDClaims{Sub: "sub-alice", Email: "alice@example.com", Name: "Alice", Nonce: nonce, EmailVerified: true})
+
+	rec := doSSOCallback(h, orgID, slug, code, state, cookie)
+
+	require.Equal(t, http.StatusTemporaryRedirect, rec.Code)
+	assert.Equal(t, "/dashboard", rec.Header().Get("Location"))
+	assert.True(t, hasCookie(rec, "account_token"), "a session cookie should be issued")
+
+	account, err := models.FindAccountByEmail("alice@example.com")
+	require.NoError(t, err)
+
+	ap, err := account.FindAccountProviderByID(models.ProviderOIDCPrefix+provider.ID.String(), "sub-alice")
+	require.NoError(t, err)
+	assert.Equal(t, "alice@example.com", ap.Email)
+
+	// JIT provisioning: a human user and the default viewer role.
+	user, err := models.FindActiveUserByEmail(orgID, account.Email)
+	require.NoError(t, err)
+	roles, err := r.AuthService.GetUserRolesForOrg(context.Background(), user.ID.String(), orgID)
+	require.NoError(t, err)
+	assert.True(t, hasRole(roles, models.RoleOrgViewer), "SSO user should get the org_viewer role")
+}
+
+func TestSSOLogin_LoginHintAndPromptGating(t *testing.T) {
+	h, _, _, orgID, slug, _ := setupSSO(t)
+
+	// Run handleSSOLogin with optional login_hint/prompt query params and return
+	// the query of the resulting authorize-redirect URL.
+	login := func(t *testing.T, query string) url.Values {
+		target := "/auth/sso/" + orgID + "/" + slug
+		if query != "" {
+			target += "?" + query
+		}
+		req := mux.SetURLVars(httptest.NewRequest("GET", target, nil), map[string]string{"orgId": orgID, "providerSlug": slug})
+		rec := httptest.NewRecorder()
+		h.handleSSOLogin(rec, req)
+		require.Equal(t, http.StatusTemporaryRedirect, rec.Code)
+		loc, err := url.Parse(rec.Header().Get("Location"))
+		require.NoError(t, err)
+		return loc.Query()
+	}
+
+	setOpts := func(loginHint, promptNone bool) {
+		require.NoError(t, models.UpdateInstallationMetadata(&models.InstallationMetadata{
+			SSOLoginHintEnabled:  loginHint,
+			SSOPromptNoneEnabled: promptNone,
+			UpdatedAt:            time.Now(),
+		}))
+	}
+
+	t.Run("disabled: neither parameter is forwarded", func(t *testing.T) {
+		setOpts(false, false)
+		q := login(t, "login_hint=user@example.com&prompt=none")
+		assert.Empty(t, q.Get("login_hint"))
+		assert.Empty(t, q.Get("prompt"))
+	})
+
+	t.Run("login_hint forwarded only when enabled, prompt stays gated", func(t *testing.T) {
+		setOpts(true, false)
+		q := login(t, "login_hint=user@example.com&prompt=none")
+		assert.Equal(t, "user@example.com", q.Get("login_hint"))
+		assert.Empty(t, q.Get("prompt"), "prompt=none must stay gated by its own setting")
+	})
+
+	t.Run("prompt=none forwarded only when enabled and requested", func(t *testing.T) {
+		setOpts(true, true)
+		q := login(t, "login_hint=user@example.com&prompt=none")
+		assert.Equal(t, "user@example.com", q.Get("login_hint"))
+		assert.Equal(t, "none", q.Get("prompt"))
+
+		// Enabled but not requested: not added.
+		q2 := login(t, "login_hint=user@example.com")
+		assert.Empty(t, q2.Get("prompt"))
+	})
+}
+
+func TestSSOCallback_SilentAuthErrorMapsToInteractionRequired(t *testing.T) {
+	h, _, _, orgID, slug, _ := setupSSO(t)
+
+	state, _, cookie := doSSOLogin(t, h, orgID, slug, "/dashboard")
+
+	// The IdP returns error=login_required (the typical prompt=none "no session"
+	// outcome) instead of a code; the state is still echoed, so CSRF passes.
+	target := "/auth/sso/" + orgID + "/" + slug + "/callback?error=login_required&state=" + url.QueryEscape(state)
+	req := mux.SetURLVars(httptest.NewRequest("GET", target, nil), map[string]string{"orgId": orgID, "providerSlug": slug})
+	req.AddCookie(cookie)
+	rec := httptest.NewRecorder()
+	h.handleSSOCallback(rec, req)
+
+	require.Equal(t, http.StatusTemporaryRedirect, rec.Code)
+	assert.Contains(t, rec.Header().Get("Location"), "sso_error=interaction_required")
+	assert.False(t, hasCookie(rec, "account_token"), "no session should be issued on a silent-auth failure")
+}
+
+func TestAuthConfig_SSOAutoLoginURL(t *testing.T) {
+	h, r, _, orgID, slug, _ := setupSSO(t)
+
+	authConfig := func(t *testing.T) map[string]any {
+		req := httptest.NewRequest("GET", "/auth/config", nil)
+		rec := httptest.NewRecorder()
+		h.handleAuthConfig(rec, req)
+		require.Equal(t, http.StatusOK, rec.Code)
+		var out map[string]any
+		require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &out))
+		return out
+	}
+
+	setOpts := func(promptNone, autoLogin bool) {
+		require.NoError(t, models.UpdateInstallationMetadata(&models.InstallationMetadata{
+			SSOPromptNoneEnabled: promptNone,
+			SSOAutoLoginEnabled:  autoLogin,
+			UpdatedAt:            time.Now(),
+		}))
+	}
+
+	wantURL := "/auth/sso/" + orgID + "/" + slug
+
+	t.Run("exposed when enabled, prompt=none on, and a sole provider", func(t *testing.T) {
+		setOpts(true, true)
+		out := authConfig(t)
+		assert.Equal(t, true, out["ssoAutoLoginEnabled"])
+		assert.Equal(t, wantURL, out["ssoAutoLoginUrl"])
+	})
+
+	t.Run("withheld when prompt=none is off", func(t *testing.T) {
+		setOpts(false, true)
+		assert.Equal(t, "", authConfig(t)["ssoAutoLoginUrl"])
+	})
+
+	t.Run("withheld when auto-login is off", func(t *testing.T) {
+		setOpts(true, false)
+		assert.Equal(t, "", authConfig(t)["ssoAutoLoginUrl"])
+	})
+
+	t.Run("withheld when more than one provider is enabled", func(t *testing.T) {
+		setOpts(true, true)
+		second := models.NewOIDCProvider(r.Organization.ID, nil, "idp2", "Second IdP", "", "https://idp2.example.com", "client2", nil, []string{"example.org"}, true)
+		require.NoError(t, second.SetClientSecret(context.Background(), r.Encryptor, "secret2"))
+		require.NoError(t, second.Create())
+		assert.Equal(t, "", authConfig(t)["ssoAutoLoginUrl"], "ambiguous: no auto-login with multiple providers")
+	})
+}
+
+func TestLogout(t *testing.T) {
+	h, _, mock, _, _, _ := setupSSO(t)
+
+	logout := func(t *testing.T) string {
+		req := httptest.NewRequest("GET", "/logout", nil)
+		rec := httptest.NewRecorder()
+		h.handleLogout(rec, req)
+		require.Equal(t, http.StatusTemporaryRedirect, rec.Code)
+		return rec.Header().Get("Location")
+	}
+
+	t.Run("local logout lands on the logged_out marker", func(t *testing.T) {
+		require.NoError(t, models.UpdateInstallationMetadata(&models.InstallationMetadata{
+			SSOIdPLogoutEnabled: false,
+			UpdatedAt:           time.Now(),
+		}))
+		assert.Equal(t, "/login?logged_out=1", logout(t))
+	})
+
+	t.Run("idp logout redirects through the end-session endpoint", func(t *testing.T) {
+		require.NoError(t, models.UpdateInstallationMetadata(&models.InstallationMetadata{
+			SSOIdPLogoutEnabled: true,
+			UpdatedAt:           time.Now(),
+		}))
+
+		loc := logout(t)
+		u, err := url.Parse(loc)
+		require.NoError(t, err)
+		assert.Equal(t, mock.Issuer+"/logout", u.Scheme+"://"+u.Host+u.Path)
+		assert.Equal(t, "test-client", u.Query().Get("client_id"))
+		assert.Equal(t, "http://localhost:8000/login?logged_out=1", u.Query().Get("post_logout_redirect_uri"))
+	})
+}
+
+// A second login through the same provider with a DIFFERENT subject (e.g. the
+// provider was re-pointed to another IdP, or the IdP rotated the sub) must
+// upsert the existing (account_id, provider) link, not insert a duplicate.
+func TestSSOFlow_SubjectChangeUpserts(t *testing.T) {
+	h, _, mock, orgID, slug, provider := setupSSO(t)
+	providerKey := models.ProviderOIDCPrefix + provider.ID.String()
+
+	// First login: subject sub-old.
+	s1, n1, c1 := doSSOLogin(t, h, orgID, slug, "/")
+	mock.RegisterCode("code-old", support.MockIDClaims{Sub: "sub-old", Email: "rp@example.com", Name: "RP", Nonce: n1, EmailVerified: true})
+	rec1 := doSSOCallback(h, orgID, slug, "code-old", s1, c1)
+	require.NotContains(t, rec1.Header().Get("Location"), "sso_error")
+
+	account, err := models.FindAccountByEmail("rp@example.com")
+	require.NoError(t, err)
+	ap, err := account.FindAccountProviderByID(providerKey, "sub-old")
+	require.NoError(t, err)
+	assert.Equal(t, "sub-old", ap.ProviderID)
+
+	// Second login: same provider + email, different subject.
+	s2, n2, c2 := doSSOLogin(t, h, orgID, slug, "/")
+	mock.RegisterCode("code-new", support.MockIDClaims{Sub: "sub-new", Email: "rp@example.com", Name: "RP", Nonce: n2, EmailVerified: true})
+	rec2 := doSSOCallback(h, orgID, slug, "code-new", s2, c2)
+	require.NotContains(t, rec2.Header().Get("Location"), "sso_error", "changed subject must upsert, not error")
+	assert.True(t, hasCookie(rec2, "account_token"))
+
+	// The single link now carries the new subject.
+	ap2, err := account.FindAccountProviderByID(providerKey, "sub-new")
+	require.NoError(t, err)
+	assert.Equal(t, "sub-new", ap2.ProviderID)
+}
+
+func TestSSOFlow_DomainGateRejectsDisallowedEmail(t *testing.T) {
+	h, _, mock, orgID, slug, _ := setupSSO(t)
+
+	state, nonce, cookie := doSSOLogin(t, h, orgID, slug, "")
+	mock.RegisterCode("code-bad", support.MockIDClaims{Sub: "sub-bob", Email: "bob@evil.com", Nonce: nonce, EmailVerified: true})
+
+	rec := doSSOCallback(h, orgID, slug, "code-bad", state, cookie)
+
+	require.Equal(t, http.StatusTemporaryRedirect, rec.Code)
+	assert.Contains(t, rec.Header().Get("Location"), "sso_error=domain_not_allowed")
+	_, err := models.FindAccountByEmail("bob@evil.com")
+	assert.Error(t, err, "no account should be provisioned for a disallowed domain")
+}
+
+func TestSSOFlow_UnverifiedEmailRejected(t *testing.T) {
+	h, _, mock, orgID, slug, _ := setupSSO(t)
+
+	state, nonce, cookie := doSSOLogin(t, h, orgID, slug, "")
+	mock.RegisterCode("code-unverified", support.MockIDClaims{Sub: "sub-carol", Email: "carol@example.com", Nonce: nonce, EmailVerified: false})
+
+	rec := doSSOCallback(h, orgID, slug, "code-unverified", state, cookie)
+
+	require.Equal(t, http.StatusTemporaryRedirect, rec.Code)
+	assert.Contains(t, rec.Header().Get("Location"), "sso_error=email_not_verified")
+	_, err := models.FindAccountByEmail("carol@example.com")
+	assert.Error(t, err, "an unverified email must not be provisioned")
+}
+
+func TestSSOFlow_NonceMismatchRejected(t *testing.T) {
+	h, _, mock, orgID, slug, _ := setupSSO(t)
+
+	state, _, cookie := doSSOLogin(t, h, orgID, slug, "")
+	// IdP returns a token whose nonce does not match the one we issued.
+	mock.RegisterCode("code-replay", support.MockIDClaims{Sub: "sub-x", Email: "x@example.com", Nonce: "WRONG-NONCE"})
+
+	rec := doSSOCallback(h, orgID, slug, "code-replay", state, cookie)
+
+	require.Equal(t, http.StatusTemporaryRedirect, rec.Code)
+	assert.Contains(t, rec.Header().Get("Location"), "sso_error=invalid_nonce")
+}
+
+func TestSSOFlow_CSRFStateMismatchRejected(t *testing.T) {
+	h, _, _, orgID, slug, _ := setupSSO(t)
+
+	_, _, cookie := doSSOLogin(t, h, orgID, slug, "")
+	// A state that does not match the signed cookie is rejected before any token exchange.
+	rec := doSSOCallback(h, orgID, slug, "code-x", "ATTACKER-STATE", cookie)
+
+	require.Equal(t, http.StatusTemporaryRedirect, rec.Code)
+	assert.Contains(t, rec.Header().Get("Location"), "sso_error=invalid_state")
+}
+
+func TestSSOLogin_UnknownProviderRedirects(t *testing.T) {
+	h, _, _, orgID, _, _ := setupSSO(t)
+
+	req := mux.SetURLVars(
+		httptest.NewRequest("GET", "/auth/sso/"+orgID+"/nope", nil),
+		map[string]string{"orgId": orgID, "providerSlug": "nope"},
+	)
+	rec := httptest.NewRecorder()
+	h.handleSSOLogin(rec, req)
+
+	require.Equal(t, http.StatusTemporaryRedirect, rec.Code)
+	assert.Contains(t, rec.Header().Get("Location"), "sso_error=provider_not_found")
+}
+
+func TestSSOFlow_GroupGate(t *testing.T) {
+	h, r, mock, orgID, _, _ := setupSSO(t)
+
+	p := models.NewOIDCProvider(r.Organization.ID, nil, "gated", "Gated", "", mock.Issuer, "test-client", nil, nil, true)
+	p.SetAllowedGroups([]string{"devs"})
+	require.NoError(t, p.SetClientSecret(context.Background(), r.Encryptor, "test-secret"))
+	require.NoError(t, p.Create())
+
+	t.Run("rejects a user not in an allowed group", func(t *testing.T) {
+		state, nonce, cookie := doSSOLogin(t, h, orgID, "gated", "")
+		mock.RegisterCode("g-no", support.MockIDClaims{Sub: "s1", Email: "a@example.com", Nonce: nonce, EmailVerified: true, Groups: []string{"other"}})
+		rec := doSSOCallback(h, orgID, "gated", "g-no", state, cookie)
+		assert.Contains(t, rec.Header().Get("Location"), "sso_error=group_not_allowed")
+	})
+
+	t.Run("admits a user in an allowed group", func(t *testing.T) {
+		state, nonce, cookie := doSSOLogin(t, h, orgID, "gated", "")
+		mock.RegisterCode("g-yes", support.MockIDClaims{Sub: "s2", Email: "b@example.com", Nonce: nonce, EmailVerified: true, Groups: []string{"devs"}})
+		rec := doSSOCallback(h, orgID, "gated", "g-yes", state, cookie)
+		require.Equal(t, http.StatusTemporaryRedirect, rec.Code)
+		assert.NotContains(t, rec.Header().Get("Location"), "sso_error")
+	})
+}
+
+func TestSSOFlow_RoleMappingAndResync(t *testing.T) {
+	h, r, mock, orgID, _, _ := setupSSO(t)
+	ctx := context.Background()
+
+	p := models.NewOIDCProvider(r.Organization.ID, nil, "rbac", "RBAC", "", mock.Issuer, "test-client", nil, nil, true)
+	p.SetGroupRoleMappings(map[string]string{"admins": models.RoleOrgAdmin, "viewers": models.RoleOrgViewer})
+	require.NoError(t, p.SetClientSecret(ctx, r.Encryptor, "test-secret"))
+	require.NoError(t, p.Create())
+
+	login := func(code string, groups []string) {
+		state, nonce, cookie := doSSOLogin(t, h, orgID, "rbac", "")
+		mock.RegisterCode(code, support.MockIDClaims{Sub: "sub-rb", Email: "rb@example.com", Nonce: nonce, EmailVerified: true, Groups: groups})
+		rec := doSSOCallback(h, orgID, "rbac", code, state, cookie)
+		require.Equal(t, http.StatusTemporaryRedirect, rec.Code)
+		require.NotContains(t, rec.Header().Get("Location"), "sso_error")
+	}
+	rolesOf := func() []*authorization.RoleDefinition {
+		user, err := models.FindActiveUserByEmail(orgID, "rb@example.com")
+		require.NoError(t, err)
+		roles, err := r.AuthService.GetUserRolesForOrg(ctx, user.ID.String(), orgID)
+		require.NoError(t, err)
+		return roles
+	}
+
+	t.Run("first login maps the group to viewer", func(t *testing.T) {
+		login("rb1", []string{"viewers"})
+		assert.True(t, hasRole(rolesOf(), models.RoleOrgViewer))
+		assert.False(t, hasRole(rolesOf(), models.RoleOrgAdmin), "viewer must not imply admin")
+	})
+
+	t.Run("re-login with the admin group upgrades the role to admin", func(t *testing.T) {
+		login("rb2", []string{"admins"})
+		assert.True(t, hasRole(rolesOf(), models.RoleOrgAdmin))
+	})
+
+	t.Run("re-login with the viewer group downgrades, dropping the admin grant", func(t *testing.T) {
+		// viewer does not imply admin, so admin's absence proves the prior
+		// admin grant was actually removed (not merely shadowed by inheritance).
+		login("rb3", []string{"viewers"})
+		roles := rolesOf()
+		assert.True(t, hasRole(roles, models.RoleOrgViewer))
+		assert.False(t, hasRole(roles, models.RoleOrgAdmin), "admin grant must be removed on downgrade")
+	})
+}
+
+func TestSSOFlow_CustomGroupsClaim(t *testing.T) {
+	h, r, mock, orgID, _, _ := setupSSO(t)
+	ctx := context.Background()
+
+	// Provider reads groups from a non-default "roles" claim and maps one to admin.
+	p := models.NewOIDCProvider(r.Organization.ID, nil, "okta", "Okta", "", mock.Issuer, "test-client", nil, nil, true)
+	p.SetGroupsClaim("roles")
+	p.SetGroupRoleMappings(map[string]string{"admins": models.RoleOrgAdmin})
+	require.NoError(t, p.SetClientSecret(ctx, r.Encryptor, "test-secret"))
+	require.NoError(t, p.Create())
+
+	state, nonce, cookie := doSSOLogin(t, h, orgID, "okta", "")
+	mock.RegisterCode("okta-1", support.MockIDClaims{
+		Sub: "sub-o", Email: "o@example.com", Nonce: nonce, EmailVerified: true,
+		Groups:      []string{"not-mapped"}, // the default "groups" claim must be ignored
+		ExtraClaims: map[string]any{"roles": []string{"admins"}},
+	})
+	rec := doSSOCallback(h, orgID, "okta", "okta-1", state, cookie)
+	require.Equal(t, http.StatusTemporaryRedirect, rec.Code)
+	require.NotContains(t, rec.Header().Get("Location"), "sso_error")
+
+	// The role must come from the custom "roles" claim (admin), not the default
+	// "groups" claim (which holds an unmapped value, i.e. would be viewer).
+	user, err := models.FindActiveUserByEmail(orgID, "o@example.com")
+	require.NoError(t, err)
+	roles, err := r.AuthService.GetUserRolesForOrg(ctx, user.ID.String(), orgID)
+	require.NoError(t, err)
+	assert.True(t, hasRole(roles, models.RoleOrgAdmin), "role should resolve from the custom 'roles' claim")
+}

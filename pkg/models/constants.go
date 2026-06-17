@@ -6,6 +6,15 @@ const (
 	ProviderGitHub = "github"
 	ProviderGoogle = "google"
 
+	// ProviderOIDCPrefix namespaces the account_providers.provider value for a
+	// per-organization OIDC SSO login: ProviderOIDCPrefix + provider UUID
+	// (e.g. "oidc:6f1c...") — 41 chars, fits the provider VARCHAR(50).
+	ProviderOIDCPrefix = "oidc:"
+
+	// OIDC SSO provider types (OrganizationOIDCProvider.Type).
+	OIDCProviderTypeOIDC = "oidc"
+	OIDCProviderTypeSAML = "saml"
+
 	DomainTypeOrganization = "org"
 
 	DisplayNameOwner  = "Owner"
