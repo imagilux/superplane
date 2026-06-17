@@ -5,8 +5,9 @@
 // session keeps its own conversation history, and SendMessage runs the
 // completion in a goroutine whose events StreamEvents drains.
 //
-// The tool-calling loop is added by #8; the autonomous rubric loop
-// (DefineOutcome) has no OpenAI-compatible equivalent and is reported
+// Tool calls are surfaced as custom-tool events; the worker executes them and
+// calls SendCustomToolResults, which resumes the turn. The autonomous rubric
+// loop (DefineOutcome) has no OpenAI-compatible equivalent and is reported
 // unsupported.
 package openai
 
@@ -35,11 +36,21 @@ const systemPrompt = "You are SuperPlane's assistant, helping users understand a
 // equivalent (tracked as a follow-up).
 var ErrDefineOutcomeUnsupported = errors.New("openai: DefineOutcome (autonomous rubric loop) is not supported by OpenAI-compatible providers")
 
+// ToolDefinition is a provider-neutral description of a custom tool the agent
+// can call. buildAgentService sources these from the agent_tools registry; this
+// package maps them to OpenAI function tools (it must not import agent_tools).
+type ToolDefinition struct {
+	Name        string
+	Description string
+	Parameters  map[string]any
+}
+
 // Config describes the OpenAI-compatible endpoint.
 type Config struct {
 	BaseURL string
 	APIKey  string // optional; many local servers need none
 	Model   string
+	Tools   []ToolDefinition
 	// HTTPClient is optional; when nil a client with a generous timeout is used.
 	// Tests inject the httptest server's client.
 	HTTPClient *http.Client
@@ -49,6 +60,7 @@ type Provider struct {
 	baseURL    string
 	apiKey     string
 	model      string
+	tools      []ToolDefinition
 	httpClient *http.Client
 
 	mu       sync.Mutex
@@ -58,6 +70,7 @@ type Provider struct {
 var (
 	_ agents.Provider               = (*Provider)(nil)
 	_ agents.ProviderSessionCleaner = (*Provider)(nil)
+	_ agents.CustomToolResultSender = (*Provider)(nil)
 )
 
 // New validates the endpoint config and returns a Provider. BaseURL and Model
@@ -77,6 +90,7 @@ func New(cfg Config) (*Provider, error) {
 		baseURL:    strings.TrimRight(cfg.BaseURL, "/"),
 		apiKey:     cfg.APIKey,
 		model:      cfg.Model,
+		tools:      cfg.Tools,
 		httpClient: httpClient,
 		sessions:   map[string]*session{},
 	}, nil
@@ -134,10 +148,16 @@ func (p *Provider) SendMessage(_ context.Context, providerSessionID, message str
 	return nil
 }
 
-// runTurn streams one assistant turn and emits final-emit ProviderEvents: a
-// single assistant_message with the full text, then a terminal event.
+// runTurn streams one assistant turn. A plain turn emits a single
+// assistant_message with the full text, then turn_completed. A tool-calling turn
+// records the assistant message that requested the tools (OpenAI requires it to
+// precede the results), surfaces each call, then suspends — the worker executes
+// the tools and calls SendCustomToolResults, which resumes the loop.
 func (p *Provider) runTurn(ctx context.Context, s *session) {
 	var sb strings.Builder
+	tools := newToolCallAccumulator()
+	var finishReason string
+
 	err := p.streamCompletion(ctx, s.snapshotHistory(), func(chunk chatCompletionChunk) error {
 		if chunk.Error != nil && chunk.Error.Message != "" {
 			return errors.New(chunk.Error.Message)
@@ -145,6 +165,10 @@ func (p *Provider) runTurn(ctx context.Context, s *session) {
 		for _, choice := range chunk.Choices {
 			if choice.Delta.Content != "" {
 				sb.WriteString(choice.Delta.Content)
+			}
+			tools.add(choice.Delta.ToolCalls)
+			if choice.FinishReason != "" {
+				finishReason = choice.FinishReason
 			}
 		}
 		return nil
@@ -161,6 +185,33 @@ func (p *Provider) runTurn(ctx context.Context, s *session) {
 	}
 
 	text := sb.String()
+	toolCalls := tools.finalize()
+
+	if finishReason == "tool_calls" || len(toolCalls) > 0 {
+		s.appendHistory(chatMessage{Role: "assistant", Content: text, ToolCalls: toolCalls})
+		ids := make([]string, 0, len(toolCalls))
+		for _, tc := range toolCalls {
+			s.enqueue(agents.ProviderEvent{
+				ProviderEventID: tc.ID,
+				Type:            agents.ProviderEventCustomToolUseStarted,
+				ToolName:        tc.Function.Name,
+				ToolCallID:      tc.ID,
+				ToolInput:       tc.Function.Arguments,
+				CustomToolUse: &agents.CustomToolUse{
+					ID:    tc.ID,
+					Name:  tc.Function.Name,
+					Input: tc.Function.Arguments,
+				},
+			})
+			ids = append(ids, tc.ID)
+		}
+		s.enqueue(agents.ProviderEvent{
+			Type:               agents.ProviderEventCustomToolResultsRequired,
+			CustomToolEventIDs: ids,
+		})
+		return
+	}
+
 	s.appendHistory(chatMessage{Role: "assistant", Content: text})
 	s.enqueue(agents.ProviderEvent{
 		ProviderEventID: uuid.NewString(),
@@ -168,6 +219,31 @@ func (p *Provider) runTurn(ctx context.Context, s *session) {
 		Text:            text,
 	})
 	s.enqueue(agents.ProviderEvent{Type: agents.ProviderEventTurnCompleted})
+}
+
+// SendCustomToolResults appends the tool results to the session history and
+// resumes the turn; the continuation may produce more text or further tool
+// calls, all drained by the same in-flight StreamEvents call.
+func (p *Provider) SendCustomToolResults(_ context.Context, providerSessionID string, results []agents.CustomToolResult) error {
+	s, err := p.getSession(providerSessionID)
+	if err != nil {
+		return err
+	}
+
+	msgs := make([]chatMessage, 0, len(results))
+	for _, r := range results {
+		msgs = append(msgs, chatMessage{
+			Role:       "tool",
+			ToolCallID: r.CustomToolUseID,
+			Content:    r.Content,
+		})
+	}
+	s.appendHistory(msgs...)
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	s.setCancel(cancel)
+	go p.runTurn(runCtx, s)
+	return nil
 }
 
 func (p *Provider) InterruptSession(_ context.Context, providerSessionID string) error {
@@ -226,5 +302,6 @@ func (p *Provider) DeleteSession(_ context.Context, providerSessionID string) er
 }
 
 func isTerminal(t agents.ProviderEventType) bool {
-	return t == agents.ProviderEventTurnCompleted || t == agents.ProviderEventSessionFailed
+	return t == agents.ProviderEventTurnCompleted ||
+		t == agents.ProviderEventSessionFailed
 }

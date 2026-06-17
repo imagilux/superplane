@@ -135,6 +135,7 @@ func buildOpenAIAgentService(authService authorization.Authorization) (agents.Pr
 		BaseURL: cfg.BaseURL,
 		APIKey:  cfg.APIKey,
 		Model:   cfg.Model,
+		Tools:   openAIToolDefinitions(),
 	})
 	if err != nil {
 		log.WithError(err).Warn("failed to initialise OpenAI-compatible agent provider")
@@ -143,6 +144,21 @@ func buildOpenAIAgentService(authService authorization.Authorization) (agents.Pr
 
 	log.WithField("model", cfg.Model).Info("OpenAI-compatible agent provider enabled")
 	return provider, agents.NewService(provider, authService)
+}
+
+// openAIToolDefinitions adapts the registered agent tools to the OpenAI
+// provider's neutral tool shape (pkg/agents/openai must not import agent_tools).
+func openAIToolDefinitions() []openai.ToolDefinition {
+	defs := agenttools.DefaultDefinitions()
+	out := make([]openai.ToolDefinition, 0, len(defs))
+	for _, d := range defs {
+		out = append(out, openai.ToolDefinition{
+			Name:        d.Name(),
+			Description: d.Description(),
+			Parameters:  d.InputSchema().Map(),
+		})
+	}
+	return out
 }
 
 func startWorkers(

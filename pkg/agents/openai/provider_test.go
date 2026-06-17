@@ -3,10 +3,12 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -84,6 +86,8 @@ func TestProviderStreamsAssistantMessage(t *testing.T) {
 	assert.Equal(t, "Bearer sk-test", gotAuth)
 	assert.Equal(t, "test-model", gotBody["model"])
 	assert.Equal(t, true, gotBody["stream"])
+	_, hasTools := gotBody["tools"]
+	assert.False(t, hasTools, "no tools array when none configured")
 	msgs, ok := gotBody["messages"].([]any)
 	require.True(t, ok)
 	last := msgs[len(msgs)-1].(map[string]any)
@@ -154,4 +158,128 @@ func TestProviderMissingSessionIsRecoverable(t *testing.T) {
 	err = p.SendMessage(context.Background(), "does-not-exist", "hi", agents.SendMessageOptions{})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, agents.ErrProviderSessionUnavailable)
+}
+
+// collectUntilToolResults drains events up to and including the first
+// custom_tool_results_required (which is NOT terminal), mirroring the worker,
+// which stops StreamEvents there to go execute the tools.
+func collectUntilToolResults(t *testing.T, p *Provider, sid string) []agents.ProviderEvent {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stop := errors.New("stop")
+	var events []agents.ProviderEvent
+	err := p.StreamEvents(ctx, sid, func(e agents.ProviderEvent) error {
+		events = append(events, e)
+		if e.Type == agents.ProviderEventCustomToolResultsRequired {
+			return stop
+		}
+		return nil
+	})
+	if err != nil && !errors.Is(err, stop) {
+		require.NoError(t, err)
+	}
+	return events
+}
+
+func TestProviderToolCallRoundTrip(t *testing.T) {
+	var mu sync.Mutex
+	var bodies [][]byte
+	reqN := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, body)
+		n := reqN
+		reqN++
+		mu.Unlock()
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		if n == 0 {
+			// One tool call, fragmented across two frames to exercise accumulation.
+			fmt.Fprint(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"update_draft","arguments":"{\"x\":"}}]},"finish_reason":null}]}`+"\n\n")
+			if flusher != nil {
+				flusher.Flush()
+			}
+			fmt.Fprint(w, `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"1}"}}]},"finish_reason":null}]}`+"\n\n")
+			fmt.Fprint(w, `data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`+"\n\n")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		} else {
+			fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"all done"},"finish_reason":null}]}`+"\n\n")
+			fmt.Fprint(w, `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`+"\n\n")
+			fmt.Fprint(w, "data: [DONE]\n\n")
+		}
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer srv.Close()
+
+	p, err := New(Config{
+		BaseURL:    srv.URL,
+		Model:      "m",
+		HTTPClient: srv.Client(),
+		Tools:      []ToolDefinition{{Name: "update_draft", Description: "edit the draft", Parameters: map[string]any{"type": "object"}}},
+	})
+	require.NoError(t, err)
+
+	res, err := p.CreateSession(context.Background(), agents.CreateSessionOptions{})
+	require.NoError(t, err)
+	sid := res.ProviderSessionID
+
+	require.NoError(t, p.SendMessage(context.Background(), sid, "build it", agents.SendMessageOptions{}))
+
+	ev1 := collectUntilToolResults(t, p, sid)
+	require.Len(t, ev1, 2)
+	assert.Equal(t, agents.ProviderEventCustomToolUseStarted, ev1[0].Type)
+	assert.Equal(t, "update_draft", ev1[0].ToolName)
+	require.NotNil(t, ev1[0].CustomToolUse)
+	assert.Equal(t, "call_1", ev1[0].CustomToolUse.ID)
+	assert.JSONEq(t, `{"x":1}`, ev1[0].CustomToolUse.Input)
+	assert.Equal(t, agents.ProviderEventCustomToolResultsRequired, ev1[1].Type)
+	assert.Equal(t, []string{"call_1"}, ev1[1].CustomToolEventIDs)
+
+	require.NoError(t, p.SendCustomToolResults(context.Background(), sid, []agents.CustomToolResult{
+		{CustomToolUseID: "call_1", Content: `{"ok":true}`},
+	}))
+
+	ev2 := collect(t, p, sid)
+	require.Len(t, ev2, 2)
+	assert.Equal(t, agents.ProviderEventAssistantMessage, ev2[0].Type)
+	assert.Equal(t, "all done", ev2[0].Text)
+	assert.Equal(t, agents.ProviderEventTurnCompleted, ev2[1].Type)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Len(t, bodies, 2)
+
+	// Both requests advertise the tool.
+	for i, b := range bodies {
+		var req map[string]any
+		require.NoError(t, json.Unmarshal(b, &req))
+		tools, ok := req["tools"].([]any)
+		require.Truef(t, ok && len(tools) > 0, "request %d missing tools", i)
+		fn := tools[0].(map[string]any)["function"].(map[string]any)
+		assert.Equal(t, "update_draft", fn["name"])
+	}
+
+	// The second request carries the assistant tool_calls message and the tool result.
+	var req2 map[string]any
+	require.NoError(t, json.Unmarshal(bodies[1], &req2))
+	msgs := req2["messages"].([]any)
+	var sawAssistantToolCalls, sawToolResult bool
+	for _, m := range msgs {
+		msg := m.(map[string]any)
+		if msg["role"] == "assistant" {
+			if tc, ok := msg["tool_calls"].([]any); ok && len(tc) > 0 {
+				sawAssistantToolCalls = true
+			}
+		}
+		if msg["role"] == "tool" && msg["tool_call_id"] == "call_1" {
+			sawToolResult = true
+		}
+	}
+	assert.True(t, sawAssistantToolCalls, "assistant message with tool_calls must precede tool results")
+	assert.True(t, sawToolResult, "tool result message with matching tool_call_id")
 }
