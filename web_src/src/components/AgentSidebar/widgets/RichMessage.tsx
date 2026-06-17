@@ -2,6 +2,9 @@ import { memo, useMemo, type ComponentProps, type ReactNode } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkBreaks from "remark-breaks";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
+import "katex/dist/katex.min.css";
 import { BannerWidget } from "./BannerWidget";
 import { ButtonsWidget } from "./ButtonsWidget";
 import { ChartWidget } from "./ChartWidget";
@@ -143,7 +146,8 @@ function MarkdownSegment({
   return (
     <div className={`min-w-0 ${MARKDOWN_CLASSES}`}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkBreaks]}
+        remarkPlugins={[remarkGfm, remarkBreaks, remarkMath]}
+        rehypePlugins={[rehypeKatex]}
         urlTransform={(url) => (isAgentLink(url) ? url : defaultUrlTransform(url))}
         components={{
           a: ({ children, href }) => (
