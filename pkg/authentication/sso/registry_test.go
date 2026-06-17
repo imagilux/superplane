@@ -48,3 +48,31 @@ func TestRegistryUnreachableIssuerErrorsAndIsNotCached(t *testing.T) {
 	_, _, err = reg.Get(context.Background(), bad)
 	assert.Error(t, err)
 }
+
+func TestRegistryTTLExpiryReDiscovers(t *testing.T) {
+	mock := support.NewMockOIDCProvider(t, "client-1")
+	reg := sso.NewRegistry(100 * time.Millisecond)
+
+	cfg := sso.Config{
+		ID:           "ttl",
+		IssuerURL:    mock.Issuer,
+		ClientID:     "client-1",
+		ClientSecret: "s",
+		RedirectURL:  "http://localhost/cb",
+	}
+
+	_, _, err := reg.Get(context.Background(), cfg)
+	require.NoError(t, err)
+
+	// Within the TTL the entry is served from cache, so it still resolves even
+	// after the IdP becomes unreachable — proving no re-discovery happened.
+	mock.Server.Close()
+	_, _, err = reg.Get(context.Background(), cfg)
+	require.NoError(t, err, "a cached entry should be served without re-hitting the IdP")
+
+	// Past the TTL the entry is stale, so Get must re-discover — which now fails
+	// because the IdP is down. This proves the cache was not served stale.
+	time.Sleep(300 * time.Millisecond)
+	_, _, err = reg.Get(context.Background(), cfg)
+	require.Error(t, err, "an expired entry must trigger re-discovery, not a stale hit")
+}

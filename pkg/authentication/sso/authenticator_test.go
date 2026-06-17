@@ -25,3 +25,14 @@ func TestClaimStringAndBool(t *testing.T) {
 	assert.False(t, claimBool(m, "missing"))
 	assert.False(t, claimBool(m, "s"), "a non-bool value reads as false")
 }
+
+func TestClaimBoolStringForm(t *testing.T) {
+	// Some IdPs emit email_verified as a JSON string rather than a boolean.
+	assert.True(t, claimBool(map[string]any{"v": "true"}, "v"), `string "true"`)
+	assert.False(t, claimBool(map[string]any{"v": "false"}, "v"), `string "false"`)
+	assert.True(t, claimBool(map[string]any{"v": "1"}, "v"), `string "1"`)
+	assert.False(t, claimBool(map[string]any{"v": "0"}, "v"), `string "0"`)
+	assert.True(t, claimBool(map[string]any{"v": true}, "v"), "native bool still works")
+	assert.False(t, claimBool(map[string]any{"v": "notabool"}, "v"), "an unparseable string is false")
+	assert.False(t, claimBool(map[string]any{"v": 1}, "v"), "a numeric value is not coerced")
+}

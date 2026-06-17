@@ -2,7 +2,10 @@ package sso
 
 import (
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -33,4 +36,21 @@ func TestIsBlockedDialIP(t *testing.T) {
 	// Loopback is permitted only when explicitly enabled for tests.
 	allowLoopback.Store(true)
 	assert.False(t, isBlockedDialIP(net.ParseIP("127.0.0.1")))
+}
+
+func TestGuardedClientCapsRedirects(t *testing.T) {
+	orig := allowLoopback.Load()
+	defer allowLoopback.Store(orig)
+	allowLoopback.Store(true) // the httptest server listens on loopback
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "/loop", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	resp, err := NewGuardedHTTPClient(2 * time.Second).Get(srv.URL)
+	if resp != nil {
+		resp.Body.Close()
+	}
+	assert.Error(t, err, "a redirect loop must be capped, not followed indefinitely")
 }
