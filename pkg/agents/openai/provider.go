@@ -28,11 +28,6 @@ import (
 
 const ProviderName = "openai"
 
-// systemPrompt frames the assistant. NOTE: this is intentionally minimal; full
-// parity with the Anthropic managed agent's system prompt + tool instructions
-// (see pkg/agents/anthropic.SyncDefaultAgentPrompt) is a follow-up.
-const systemPrompt = "You are SuperPlane's assistant, helping users understand and edit automation canvases. Be concise and accurate. When you are unsure, say so rather than guessing."
-
 // ErrDefineOutcomeUnsupported is returned by DefineOutcome: the autonomous
 // rubric/outcome loop is a managed-agent feature with no OpenAI-compatible
 // equivalent (tracked as a follow-up).
@@ -109,7 +104,7 @@ func (p *Provider) Name() string { return ProviderName }
 // CreateSession mints a local session id and seeds the conversation history.
 // There is no upstream session to create — the endpoint is stateless.
 func (p *Provider) CreateSession(_ context.Context, opts agents.CreateSessionOptions) (*agents.CreateSessionResult, error) {
-	history := []chatMessage{{Role: "system", Content: systemPrompt}}
+	history := []chatMessage{{Role: "system", Content: agents.AgentSystemPrompt()}}
 	if strings.TrimSpace(opts.InitialContext) != "" {
 		history = append(history, chatMessage{Role: "system", Content: opts.InitialContext})
 	}

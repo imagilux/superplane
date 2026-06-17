@@ -192,6 +192,27 @@ func TestProviderReasoningOnlyTurnDoesNotPoisonHistory(t *testing.T) {
 	}
 }
 
+func TestProviderSeedsSharedSystemPrompt(t *testing.T) {
+	// The session must be seeded with the shared SuperPlane agent system prompt
+	// (widget conventions + canvas-YAML rules), not a bare stub -- a stub is what
+	// left gemma emitting plain-text "[options]" instead of :::buttons and
+	// inventing canvas fields.
+	p, err := New(Config{BaseURL: "http://example.invalid", Model: "m"})
+	require.NoError(t, err)
+	res, err := p.CreateSession(context.Background(), agents.CreateSessionOptions{})
+	require.NoError(t, err)
+
+	p.mu.Lock()
+	s := p.sessions[res.ProviderSessionID]
+	p.mu.Unlock()
+	require.NotNil(t, s)
+
+	h := s.snapshotHistory()
+	require.NotEmpty(t, h)
+	assert.Equal(t, "system", h[0].Role)
+	assert.Equal(t, agents.AgentSystemPrompt(), h[0].Content)
+}
+
 func TestProviderDefineOutcomeUnsupported(t *testing.T) {
 	p, err := New(Config{BaseURL: "http://example.invalid", Model: "m"})
 	require.NoError(t, err)
