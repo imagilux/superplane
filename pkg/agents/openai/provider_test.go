@@ -139,6 +139,59 @@ func TestProviderDefaultClientGuardsAgainstSSRF(t *testing.T) {
 	assert.Contains(t, events[0].ErrorMessage, "blocked address")
 }
 
+func TestProviderReasoningOnlyTurnDoesNotPoisonHistory(t *testing.T) {
+	// A reasoning-only turn (the model emits only <think>…</think>, so the answer
+	// is empty after the reasoning split, with no tool calls) must not leave an
+	// assistant message with neither content nor tool_calls in history. Such a
+	// message serializes to {"role":"assistant"} and strict servers reject it on
+	// the next request (llama.cpp: "Assistant message must contain either
+	// 'content' or 'tool_calls'"). Regression test for that 400.
+	var lastMessages []map[string]any
+	srv := streamingServer(t, []string{"<think>", "thinking, no answer", "</think>"}, func(_ *http.Request, body []byte) {
+		var req struct {
+			Messages []map[string]any `json:"messages"`
+		}
+		_ = json.Unmarshal(body, &req)
+		lastMessages = req.Messages
+	})
+	defer srv.Close()
+
+	p, err := New(Config{BaseURL: srv.URL, Model: "m", HTTPClient: srv.Client()})
+	require.NoError(t, err)
+	res, err := p.CreateSession(context.Background(), agents.CreateSessionOptions{})
+	require.NoError(t, err)
+	sid := res.ProviderSessionID
+
+	// First (reasoning-only) turn: it closes with just turn_completed, no answer.
+	require.NoError(t, p.SendMessage(context.Background(), sid, "hi", agents.SendMessageOptions{}))
+	first := collect(t, p, sid)
+	require.Len(t, first, 1)
+	assert.Equal(t, agents.ProviderEventTurnCompleted, first[0].Type)
+
+	p.mu.Lock()
+	s := p.sessions[sid]
+	p.mu.Unlock()
+	require.NotNil(t, s)
+	for _, m := range s.snapshotHistory() {
+		if m.Role == "assistant" {
+			assert.False(t, m.Content == "" && len(m.ToolCalls) == 0,
+				"a content-less, tool-call-less assistant message was left in history: %+v", m)
+		}
+	}
+
+	// A follow-up turn must not send an invalid assistant message to the endpoint.
+	require.NoError(t, p.SendMessage(context.Background(), sid, "still there?", agents.SendMessageOptions{}))
+	collect(t, p, sid)
+	for _, m := range lastMessages {
+		if m["role"] == "assistant" {
+			_, hasContent := m["content"]
+			_, hasToolCalls := m["tool_calls"]
+			assert.True(t, hasContent || hasToolCalls,
+				"request carried an assistant message with neither content nor tool_calls: %v", m)
+		}
+	}
+}
+
 func TestProviderDefineOutcomeUnsupported(t *testing.T) {
 	p, err := New(Config{BaseURL: "http://example.invalid", Model: "m"})
 	require.NoError(t, err)

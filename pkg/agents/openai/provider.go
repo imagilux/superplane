@@ -164,7 +164,6 @@ func (p *Provider) SendMessage(_ context.Context, providerSessionID, message str
 func (p *Provider) runTurn(ctx context.Context, s *session) {
 	var content, reasoning strings.Builder
 	tools := newToolCallAccumulator()
-	var finishReason string
 
 	err := p.streamCompletion(ctx, s.snapshotHistory(), func(chunk chatCompletionChunk) error {
 		if chunk.Error != nil && chunk.Error.Message != "" {
@@ -175,9 +174,6 @@ func (p *Provider) runTurn(ctx context.Context, s *session) {
 			reasoning.WriteString(choice.Delta.ReasoningContent)
 			reasoning.WriteString(choice.Delta.Reasoning)
 			tools.add(choice.Delta.ToolCalls)
-			if choice.FinishReason != "" {
-				finishReason = choice.FinishReason
-			}
 		}
 		return nil
 	})
@@ -203,7 +199,7 @@ func (p *Provider) runTurn(ctx context.Context, s *session) {
 	}
 
 	toolCalls := tools.finalize()
-	if finishReason == "tool_calls" || len(toolCalls) > 0 {
+	if len(toolCalls) > 0 {
 		s.appendHistory(chatMessage{Role: "assistant", Content: answer, ToolCalls: toolCalls})
 		ids := make([]string, 0, len(toolCalls))
 		for _, tc := range toolCalls {
@@ -228,10 +224,13 @@ func (p *Provider) runTurn(ctx context.Context, s *session) {
 		return
 	}
 
-	s.appendHistory(chatMessage{Role: "assistant", Content: answer})
-	// Skip an empty assistant_message (e.g. a reasoning-only turn with no answer);
-	// always emit the terminal event.
+	// A reasoning-only turn can leave an empty answer. Do NOT record an empty
+	// assistant message: with no content and no tool_calls it serializes to
+	// {"role":"assistant"}, which strict servers (llama.cpp) reject on the next
+	// request ("Assistant message must contain either 'content' or 'tool_calls'").
+	// Skip both the history entry and the assistant_message event; still close the turn.
 	if answer != "" {
+		s.appendHistory(chatMessage{Role: "assistant", Content: answer})
 		s.enqueue(agents.ProviderEvent{
 			ProviderEventID: uuid.NewString(),
 			Type:            agents.ProviderEventAssistantMessage,
