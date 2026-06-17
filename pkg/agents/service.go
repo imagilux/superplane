@@ -505,7 +505,7 @@ func (s *Service) checkAgentPermission(ctx context.Context, userID, organization
 }
 
 func findCanvasSession(tx *gorm.DB, orgID, userID, canvasID uuid.UUID) (*models.AgentSession, error) {
-	session, err := models.FindAgentSessionByCanvasInTransaction(tx, orgID, userID, canvasID)
+	session, err := models.FindActiveAgentSessionByCanvasInTransaction(tx, orgID, userID, canvasID)
 	if err == nil {
 		return session, nil
 	}

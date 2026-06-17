@@ -135,7 +135,9 @@ CREATE TABLE public.agent_sessions (
     last_active_at timestamp with time zone,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    heartbeat_at timestamp with time zone
+    heartbeat_at timestamp with time zone,
+    title text DEFAULT ''::text NOT NULL,
+    archived_at timestamp with time zone
 );
 
 
@@ -1250,17 +1252,24 @@ CREATE INDEX agent_session_messages_session_idx ON public.agent_session_messages
 
 
 --
+-- Name: agent_sessions_active_user_canvas_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX agent_sessions_active_user_canvas_idx ON public.agent_sessions USING btree (organization_id, user_id, canvas_id) WHERE (archived_at IS NULL);
+
+
+--
+-- Name: agent_sessions_archived_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX agent_sessions_archived_idx ON public.agent_sessions USING btree (organization_id, user_id, canvas_id, created_at DESC) WHERE (archived_at IS NOT NULL);
+
+
+--
 -- Name: agent_sessions_provider_session_id_idx; Type: INDEX; Schema: public; Owner: -
 --
 
 CREATE INDEX agent_sessions_provider_session_id_idx ON public.agent_sessions USING btree (provider, provider_session_id);
-
-
---
--- Name: agent_sessions_user_canvas_idx; Type: INDEX; Schema: public; Owner: -
---
-
-CREATE UNIQUE INDEX agent_sessions_user_canvas_idx ON public.agent_sessions USING btree (organization_id, user_id, canvas_id);
 
 
 --
@@ -2312,7 +2321,7 @@ SET row_security = off;
 --
 
 COPY public.schema_migrations (version, dirty) FROM stdin;
-20260617140000	f
+20260617203325	f
 \.
 
 
