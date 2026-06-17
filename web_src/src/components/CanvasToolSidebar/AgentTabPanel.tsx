@@ -26,6 +26,7 @@ import {
   isAgentBootReady,
 } from "@/lib/agentBootContext";
 import { ConversationTranscript } from "./AgentConversationTranscript";
+import { DefineOutcomeDialog } from "./DefineOutcomeDialog";
 import {
   createWebsocketCallbacks,
   isOutcomeActive,
@@ -208,6 +209,15 @@ function ChatConversation({
         outcomePassed={outcomeState?.phase === "passed"}
         onVersionPublished={() => setOutcomeState(null)}
       />
+
+      {outcomeState ? null : (
+        <DefineOutcomeDialog
+          chatId={chatId}
+          outcomeMutation={outcomeMutation}
+          setOutcomeState={setOutcomeState}
+          disabled={agentBusy}
+        />
+      )}
 
       <ComposerWithCanvasData
         canvasId={canvasId}
