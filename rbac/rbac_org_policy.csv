@@ -36,6 +36,10 @@ p,/roles/org_viewer,/org/*,oidc_providers,read
 p,/roles/org_admin,/org/*,oidc_providers,create
 p,/roles/org_admin,/org/*,oidc_providers,update
 p,/roles/org_admin,/org/*,oidc_providers,delete
+p,/roles/org_viewer,/org/*,agent_providers,read
+p,/roles/org_admin,/org/*,agent_providers,create
+p,/roles/org_admin,/org/*,agent_providers,update
+p,/roles/org_admin,/org/*,agent_providers,delete
 p,/roles/org_admin,/org/*,agents,create
 p,/roles/org_admin,/org/*,agents,delete
 p,/roles/org_owner,/org/*,integrations,delete

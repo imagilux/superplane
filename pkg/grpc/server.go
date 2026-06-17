@@ -17,6 +17,7 @@ import (
 	"github.com/superplanehq/superplane/pkg/jwt"
 	"github.com/superplanehq/superplane/pkg/oidc"
 	pbActions "github.com/superplanehq/superplane/pkg/protos/actions"
+	pbAgentProviders "github.com/superplanehq/superplane/pkg/protos/agent_providers"
 	pbAgents "github.com/superplanehq/superplane/pkg/protos/agents"
 	pbCanvasFolders "github.com/superplanehq/superplane/pkg/protos/canvas_folders"
 	pbCanvases "github.com/superplanehq/superplane/pkg/protos/canvases"
@@ -166,6 +167,9 @@ func RunServer(
 
 	oidcProvidersService := NewOIDCProvidersService(encryptor)
 	pbOIDCProviders.RegisterOIDCProvidersServer(grpcServer, oidcProvidersService)
+
+	agentProvidersService := NewAgentProvidersService(encryptor)
+	pbAgentProviders.RegisterAgentProvidersServer(grpcServer, agentProvidersService)
 
 	pbAgents.RegisterAgentsServer(grpcServer, NewAgentsService(agentService))
 

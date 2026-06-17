@@ -12,6 +12,7 @@ import (
 	"github.com/superplanehq/superplane/pkg/jwt"
 	"github.com/superplanehq/superplane/pkg/models"
 	pbActions "github.com/superplanehq/superplane/pkg/protos/actions"
+	pbAgentProviders "github.com/superplanehq/superplane/pkg/protos/agent_providers"
 	pbAgents "github.com/superplanehq/superplane/pkg/protos/agents"
 	pbCanvasFolders "github.com/superplanehq/superplane/pkg/protos/canvas_folders"
 	pbCanvases "github.com/superplanehq/superplane/pkg/protos/canvases"
@@ -467,6 +468,13 @@ func DefaultAuthorizationRules() map[string]AuthorizationRule {
 		// Discovery probes an admin-supplied issuer URL server-side; gate it to
 		// admins (create) to limit the SSRF surface.
 		pbOIDCProviders.OIDCProviders_DiscoverOIDCProvider_FullMethodName: {Resource: "oidc_providers", Action: "create", DomainType: models.DomainTypeOrganization},
+
+		// Agent Providers rules
+		pbAgentProviders.AgentProviders_CreateAgentProvider_FullMethodName:   {Resource: "agent_providers", Action: "create", DomainType: models.DomainTypeOrganization},
+		pbAgentProviders.AgentProviders_ListAgentProviders_FullMethodName:    {Resource: "agent_providers", Action: "read", DomainType: models.DomainTypeOrganization},
+		pbAgentProviders.AgentProviders_DescribeAgentProvider_FullMethodName: {Resource: "agent_providers", Action: "read", DomainType: models.DomainTypeOrganization},
+		pbAgentProviders.AgentProviders_UpdateAgentProvider_FullMethodName:   {Resource: "agent_providers", Action: "update", DomainType: models.DomainTypeOrganization},
+		pbAgentProviders.AgentProviders_DeleteAgentProvider_FullMethodName:   {Resource: "agent_providers", Action: "delete", DomainType: models.DomainTypeOrganization},
 	}
 
 	return rules

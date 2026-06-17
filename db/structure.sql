@@ -342,6 +342,27 @@ CREATE TABLE public.installation_metadata (
 
 
 --
+-- Name: organization_agent_providers; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.organization_agent_providers (
+    id uuid DEFAULT gen_random_uuid() NOT NULL,
+    organization_id uuid NOT NULL,
+    slug character varying(64) NOT NULL,
+    display_name character varying(255) NOT NULL,
+    type character varying(50) DEFAULT 'openai'::character varying NOT NULL,
+    base_url text NOT NULL,
+    model character varying(255) NOT NULL,
+    api_key_enc text DEFAULT ''::text NOT NULL,
+    enabled boolean DEFAULT true NOT NULL,
+    created_by uuid,
+    created_at timestamp without time zone DEFAULT now() NOT NULL,
+    updated_at timestamp without time zone DEFAULT now() NOT NULL,
+    deleted_at timestamp without time zone
+);
+
+
+--
 -- Name: organization_invitations; Type: TABLE; Schema: public; Owner: -
 --
 
@@ -946,6 +967,14 @@ ALTER TABLE ONLY public.installation_metadata
 
 
 --
+-- Name: organization_agent_providers organization_agent_providers_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_agent_providers
+    ADD CONSTRAINT organization_agent_providers_pkey PRIMARY KEY (id);
+
+
+--
 -- Name: organization_invitations organization_invitations_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1262,6 +1291,13 @@ CREATE INDEX idx_account_providers_account_id ON public.account_providers USING 
 --
 
 CREATE INDEX idx_account_providers_provider ON public.account_providers USING btree (provider);
+
+
+--
+-- Name: idx_agent_providers_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX idx_agent_providers_org ON public.organization_agent_providers USING btree (organization_id) WHERE (deleted_at IS NULL);
 
 
 --
@@ -1692,6 +1728,13 @@ CREATE INDEX idx_workflows_organization_id ON public.workflows USING btree (orga
 
 
 --
+-- Name: uniq_agent_provider_slug_per_org; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX uniq_agent_provider_slug_per_org ON public.organization_agent_providers USING btree (organization_id, slug) WHERE (deleted_at IS NULL);
+
+
+--
 -- Name: uniq_oidc_provider_slug_per_org; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1854,6 +1897,22 @@ ALTER TABLE ONLY public.workflow_node_queue_items
 
 ALTER TABLE ONLY public.workflow_node_requests
     ADD CONSTRAINT fk_workflow_node_requests_workflow_node FOREIGN KEY (workflow_id, node_id) REFERENCES public.workflow_nodes(workflow_id, node_id);
+
+
+--
+-- Name: organization_agent_providers organization_agent_providers_created_by_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_agent_providers
+    ADD CONSTRAINT organization_agent_providers_created_by_fkey FOREIGN KEY (created_by) REFERENCES public.users(id);
+
+
+--
+-- Name: organization_agent_providers organization_agent_providers_organization_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.organization_agent_providers
+    ADD CONSTRAINT organization_agent_providers_organization_id_fkey FOREIGN KEY (organization_id) REFERENCES public.organizations(id);
 
 
 --
@@ -2248,7 +2307,7 @@ SET row_security = off;
 --
 
 COPY public.schema_migrations (version, dirty) FROM stdin;
-20260616140000	f
+20260617120000	f
 \.
 
 
