@@ -384,6 +384,80 @@ func TestAdminInstallationSSOLoginOptions(t *testing.T) {
 	})
 }
 
+func TestAdminInstallationAISettings(t *testing.T) {
+	server, _, token := setupAdminTestServer(t)
+
+	patch := func(t *testing.T, body map[string]any) installationSettingsResponse {
+		raw, err := json.Marshal(body)
+		require.NoError(t, err)
+		response := execRequest(server, requestParams{
+			method:      "PATCH",
+			path:        "/admin/api/installation/network-settings",
+			body:        raw,
+			authCookie:  token,
+			contentType: "application/json",
+		})
+		require.Equal(t, http.StatusOK, response.Code)
+		var result installationSettingsResponse
+		require.NoError(t, json.Unmarshal(response.Body.Bytes(), &result))
+		return result
+	}
+
+	t.Run("default empty", func(t *testing.T) {
+		response := execRequest(server, requestParams{
+			method:     "GET",
+			path:       "/admin/api/installation/network-settings",
+			authCookie: token,
+		})
+		require.Equal(t, http.StatusOK, response.Code)
+		var result installationSettingsResponse
+		require.NoError(t, json.Unmarshal(response.Body.Bytes(), &result))
+		assert.Equal(t, "", result.AgentProvider)
+		assert.False(t, result.AgentAPIKeyConfigured)
+	})
+
+	t.Run("configure an OpenAI endpoint; the API key is write-only", func(t *testing.T) {
+		result := patch(t, map[string]any{
+			"agent_provider": "openai",
+			"agent_base_url": "https://llm.example.com/v1",
+			"agent_model":    "qwen3",
+			"agent_api_key":  "sk-secret",
+		})
+		assert.Equal(t, "openai", result.AgentProvider)
+		assert.Equal(t, "https://llm.example.com/v1", result.AgentBaseURL)
+		assert.Equal(t, "qwen3", result.AgentModel)
+		assert.True(t, result.AgentAPIKeyConfigured)
+		rawResult, err := json.Marshal(result)
+		require.NoError(t, err)
+		assert.NotContains(t, string(rawResult), "sk-secret", "the API response must never carry the plaintext key")
+
+		metadata, err := models.GetInstallationMetadata()
+		require.NoError(t, err)
+		assert.True(t, metadata.UsesOpenAIAgent())
+		assert.True(t, metadata.HasAgentAPIKey())
+	})
+
+	t.Run("a partial update keeps the key and the other fields", func(t *testing.T) {
+		result := patch(t, map[string]any{"agent_model": "qwen3-32b"})
+		assert.Equal(t, "qwen3-32b", result.AgentModel)
+		assert.Equal(t, "openai", result.AgentProvider, "provider survives a model-only update")
+		assert.True(t, result.AgentAPIKeyConfigured, "the key survives an update that omits it")
+	})
+
+	t.Run("rejects an unknown provider", func(t *testing.T) {
+		raw, err := json.Marshal(map[string]any{"agent_provider": "bogus"})
+		require.NoError(t, err)
+		response := execRequest(server, requestParams{
+			method:      "PATCH",
+			path:        "/admin/api/installation/network-settings",
+			body:        raw,
+			authCookie:  token,
+			contentType: "application/json",
+		})
+		assert.Equal(t, http.StatusBadRequest, response.Code)
+	})
+}
+
 func TestAdminPasswordLoginDisableGuard(t *testing.T) {
 	server, r, token := setupAdminTestServer(t)
 

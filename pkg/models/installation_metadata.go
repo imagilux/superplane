@@ -1,14 +1,20 @@
 package models
 
 import (
+	"context"
+	"encoding/base64"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/superplanehq/superplane/pkg/crypto"
 	"github.com/superplanehq/superplane/pkg/database"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
+
+const installationAgentAPIKeyAAD = "installation-agent-api-key"
 
 const installationMetadataID = 1
 
@@ -23,8 +29,17 @@ type InstallationMetadata struct {
 	// Pin the column: GORM's namer would otherwise map the mixed-case "IdP" to
 	// sso_id_p_logout_enabled, which does not match the migration.
 	SSOIdPLogoutEnabled bool `gorm:"column:sso_idp_logout_enabled"`
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
+	// Installation-wide agent (LLM) provider, admin-configured. AgentProvider is
+	// "" (use the environment-configured provider), "anthropic" (managed, its
+	// secrets stay in the environment), or "openai" (the OpenAI-compatible
+	// endpoint configured here). The API key is stored encrypted at rest (base64
+	// of AES-GCM ciphertext). Columns pinned to avoid GORM initialism surprises.
+	AgentProvider  string `gorm:"column:agent_provider"`
+	AgentBaseURL   string `gorm:"column:agent_base_url"`
+	AgentModel     string `gorm:"column:agent_model"`
+	AgentAPIKeyEnc string `gorm:"column:agent_api_key_enc"`
+	CreatedAt      time.Time
+	UpdatedAt      time.Time
 }
 
 func GetInstallationMetadata() (*InstallationMetadata, error) {
@@ -66,6 +81,10 @@ func UpdateInstallationMetadataInTransaction(tx *gorm.DB, metadata *Installation
 			"sso_prompt_none_enabled":      metadata.SSOPromptNoneEnabled,
 			"sso_auto_login_enabled":       metadata.SSOAutoLoginEnabled,
 			"sso_idp_logout_enabled":       metadata.SSOIdPLogoutEnabled,
+			"agent_provider":               metadata.AgentProvider,
+			"agent_base_url":               metadata.AgentBaseURL,
+			"agent_model":                  metadata.AgentModel,
+			"agent_api_key_enc":            metadata.AgentAPIKeyEnc,
 			"updated_at":                   metadata.UpdatedAt,
 		}).
 		Error
@@ -98,4 +117,55 @@ func findOrCreateInstallationMetadataInTransaction(tx *gorm.DB) (*InstallationMe
 	}
 
 	return &metadata, nil
+}
+
+// UsesOpenAIAgent reports whether the installation is configured to use an
+// admin-set OpenAI-compatible agent endpoint (provider "openai" with a base URL
+// and model). When false, the agent service uses the environment-configured
+// provider instead.
+func (m *InstallationMetadata) UsesOpenAIAgent() bool {
+	return m.AgentProvider == AgentProviderTypeOpenAI &&
+		strings.TrimSpace(m.AgentBaseURL) != "" &&
+		strings.TrimSpace(m.AgentModel) != ""
+}
+
+// HasAgentAPIKey reports whether an installation agent API key is stored, without exposing it.
+func (m *InstallationMetadata) HasAgentAPIKey() bool {
+	return m.AgentAPIKeyEnc != ""
+}
+
+// SetAgentAPIKey encrypts and stores the installation agent API key. An empty
+// key clears it (unauthenticated local endpoints need none).
+func (m *InstallationMetadata) SetAgentAPIKey(ctx context.Context, enc crypto.Encryptor, plaintext string) error {
+	if plaintext == "" {
+		m.AgentAPIKeyEnc = ""
+		return nil
+	}
+
+	ciphertext, err := enc.Encrypt(ctx, []byte(plaintext), []byte(installationAgentAPIKeyAAD))
+	if err != nil {
+		return err
+	}
+
+	m.AgentAPIKeyEnc = base64.StdEncoding.EncodeToString(ciphertext)
+	return nil
+}
+
+// DecryptAgentAPIKey returns the plaintext installation agent API key, or "" when none is stored.
+func (m *InstallationMetadata) DecryptAgentAPIKey(ctx context.Context, enc crypto.Encryptor) (string, error) {
+	if m.AgentAPIKeyEnc == "" {
+		return "", nil
+	}
+
+	raw, err := base64.StdEncoding.DecodeString(m.AgentAPIKeyEnc)
+	if err != nil {
+		return "", err
+	}
+
+	plaintext, err := enc.Decrypt(ctx, raw, []byte(installationAgentAPIKeyAAD))
+	if err != nil {
+		return "", err
+	}
+
+	return string(plaintext), nil
 }

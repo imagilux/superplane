@@ -337,6 +337,10 @@ CREATE TABLE public.installation_metadata (
     sso_prompt_none_enabled boolean DEFAULT false NOT NULL,
     sso_auto_login_enabled boolean DEFAULT false NOT NULL,
     sso_idp_logout_enabled boolean DEFAULT false NOT NULL,
+    agent_provider character varying(50) DEFAULT ''::character varying NOT NULL,
+    agent_base_url text DEFAULT ''::text NOT NULL,
+    agent_model character varying(255) DEFAULT ''::character varying NOT NULL,
+    agent_api_key_enc text DEFAULT ''::text NOT NULL,
     CONSTRAINT installation_metadata_singleton CHECK ((id = 1))
 );
 
@@ -2307,7 +2311,7 @@ SET row_security = off;
 --
 
 COPY public.schema_migrations (version, dirty) FROM stdin;
-20260617120000	f
+20260617130000	f
 \.
 
 

@@ -26,6 +26,7 @@ import (
 	grpc "github.com/superplanehq/superplane/pkg/grpc"
 	agentsActions "github.com/superplanehq/superplane/pkg/grpc/actions/agents"
 	"github.com/superplanehq/superplane/pkg/jwt"
+	"github.com/superplanehq/superplane/pkg/models"
 	"github.com/superplanehq/superplane/pkg/networkpolicy"
 	"github.com/superplanehq/superplane/pkg/oidc"
 	"github.com/superplanehq/superplane/pkg/public"
@@ -69,10 +70,11 @@ func getAgentProviderOverride() agents.Provider {
 // fallback an organization without its own configured provider uses; the
 // resolver layers per-organization providers on top of it.
 //
-// Enablement stays installation-global for now: with no override and no
-// installation provider, agents are disabled installation-wide (a clean "agents
-// not enabled" gRPC response, no stream worker). Lifting that to true
-// per-organization-only enablement is a follow-up tied to the settings UI.
+// Enablement stays installation-global for now: with no override, no env
+// provider, and no admin-configured installation provider in the DB, agents are
+// disabled installation-wide (a clean "agents not enabled" gRPC response, no
+// stream worker). Lifting that to true per-organization-only enablement is a
+// follow-up tied to the settings UI.
 func buildAgentService(authService authorization.Authorization, encryptor crypto.Encryptor) (agents.Resolver, agentsActions.AgentsService) {
 	if provider := getAgentProviderOverride(); provider != nil {
 		log.WithField("provider", provider.Name()).Info("Managed agents enabled with provider override")
@@ -80,13 +82,28 @@ func buildAgentService(authService authorization.Authorization, encryptor crypto
 		return resolver, agents.NewServiceWithResolver(resolver, authService)
 	}
 
+	// The env provider is the resolver's fallback; the resolver also serves an
+	// admin-configured OpenAI endpoint from the DB, live. Start the service when
+	// either exists. (A from-nothing first configuration still needs one restart
+	// to pass this boot gate; edits thereafter apply live.)
 	fallback := buildInstallationAgentProvider()
-	if fallback == nil {
+	if fallback == nil && !installationAgentConfiguredInDB() {
 		return nil, nil
 	}
 
 	resolver := providerresolver.New(fallback, encryptor, openAIToolDefinitions())
 	return resolver, agents.NewServiceWithResolver(resolver, authService)
+}
+
+// installationAgentConfiguredInDB reports whether an installation admin has
+// configured an OpenAI-compatible provider in the database, so the agent service
+// starts even with no AGENT_* env set (the resolver then serves it live).
+func installationAgentConfiguredInDB() bool {
+	md, err := models.GetInstallationMetadata()
+	if err != nil {
+		return false
+	}
+	return md.UsesOpenAIAgent()
 }
 
 // buildInstallationAgentProvider builds the installation-wide agent provider
