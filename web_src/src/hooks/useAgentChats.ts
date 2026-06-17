@@ -8,8 +8,10 @@ import {
   type UseQueryResult,
 } from "@tanstack/react-query";
 import {
+  agentsArchiveAgentChat,
   agentsGetCanvasAgentChat,
   agentsListAgentChatMessages,
+  agentsListArchivedAgentChats,
   agentsSendAgentChatMessage,
 } from "@/api-client/sdk.gen";
 import type { AgentMode } from "@/components/AgentSidebar/agentMode";
@@ -21,6 +23,15 @@ export const agentChatKeys = {
   all: ["agentChats"] as const,
   forCanvas: (canvasId: string) => [...agentChatKeys.all, "canvas", canvasId] as const,
   messages: (chatId: string) => [...agentChatKeys.all, "messages", chatId] as const,
+  archived: (canvasId: string, page: number, pageSize: number) =>
+    [...agentChatKeys.all, "archived", canvasId, page, pageSize] as const,
+};
+
+export type ArchivedAgentChatsPage = {
+  chats: AgentChat[];
+  total: number;
+  page: number;
+  pageSize: number;
 };
 
 const PAGE_SIZE = 50;
@@ -258,6 +269,50 @@ export function useDefineAgentOutcome(organizationId: string | undefined) {
         body: JSON.stringify({ chat_id: chatId, description, rubric, max_iterations: maxIterations || 3 }),
       });
       if (!res.ok) throw new Error(`Define outcome failed: ${res.status}`);
+    },
+  });
+}
+
+// useArchiveAgentChat freezes the current chat and provisions a fresh one.
+// On success it invalidates the canvas chat query so the new (empty) active
+// chat — and its empty message list — are picked up.
+export function useArchiveAgentChat(organizationId: string | undefined, canvasId: string | undefined) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ chatId }: { chatId: string }) => {
+      const response = await agentsArchiveAgentChat(withOrganizationHeader({ organizationId, path: { chatId } }));
+      return fromApiChat(response.data?.chat);
+    },
+    onSuccess: () => {
+      if (canvasId) {
+        void queryClient.invalidateQueries({ queryKey: agentChatKeys.forCanvas(canvasId) });
+      }
+    },
+  });
+}
+
+// useArchivedAgentChats lists a canvas's archived chats (newest first), paginated.
+export function useArchivedAgentChats(
+  organizationId: string | undefined,
+  canvasId: string | undefined,
+  page: number,
+  pageSize: number,
+  enabled: boolean,
+): UseQueryResult<ArchivedAgentChatsPage> {
+  return useQuery({
+    queryKey: agentChatKeys.archived(canvasId ?? "", page, pageSize),
+    enabled: enabled && Boolean(canvasId),
+    queryFn: async (): Promise<ArchivedAgentChatsPage> => {
+      const response = await agentsListArchivedAgentChats(
+        withOrganizationHeader({ organizationId, path: { canvasId: canvasId ?? "" }, query: { page, pageSize } }),
+      );
+      const chats = (response.data?.chats ?? []).map(fromApiChat).filter((chat): chat is AgentChat => chat !== null);
+      return {
+        chats,
+        total: response.data?.total ?? 0,
+        page: response.data?.page ?? page,
+        pageSize: response.data?.pageSize ?? pageSize,
+      };
     },
   });
 }

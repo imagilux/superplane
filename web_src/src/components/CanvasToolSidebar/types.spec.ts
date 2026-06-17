@@ -17,6 +17,8 @@ describe("fromApiChat", () => {
       canvasId: "",
       provider: "",
       status: "idle",
+      title: "",
+      archivedAt: null,
       createdAt: null,
       updatedAt: null,
     });

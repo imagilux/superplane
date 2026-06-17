@@ -54,6 +54,8 @@ vi.mock("@/hooks/useAgentChats", () => ({
   useSendAgentChatMessage: () => sendMutation,
   useInterruptAgentChat: () => ({ isPending: false, mutate: vi.fn() }),
   useDefineAgentOutcome: () => ({ mutateAsync: vi.fn() }),
+  useArchiveAgentChat: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(async () => null), isPending: false }),
+  useArchivedAgentChats: () => ({ data: { chats: [], total: 0, page: 1, pageSize: 10 }, isLoading: false }),
 }));
 
 vi.mock("@/hooks/useAgentSessionWebsocket", () => ({

@@ -1,5 +1,5 @@
 import { Loader2 } from "lucide-react";
-import { useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { AgentMode } from "@/components/AgentSidebar/agentMode";
 import { AccountContext } from "@/contexts/accountContextState";
 import { createSystemMessage } from "@/components/AgentSidebar/systemMessages";
@@ -25,9 +25,14 @@ import {
   getAgentBootMessage,
   isAgentBootReady,
 } from "@/lib/agentBootContext";
+import { AgentChatHeader } from "./AgentChatHeader";
 import { ConversationTranscript } from "./AgentConversationTranscript";
+import { ArchivedSessionsDrawer } from "./ArchivedSessionsDrawer";
+import { ArchivedTranscript } from "./ArchivedTranscript";
 import { DefineOutcomeDialog } from "./DefineOutcomeDialog";
+import { useArchiveControls } from "./useArchiveControls";
 import {
+  buildDisplayMessages,
   createWebsocketCallbacks,
   isOutcomeActive,
   statusLabel,
@@ -128,34 +133,11 @@ function ChatConversation({
     setStatus(initialStatus || "idle");
   }, [initialStatus]);
 
-  // Prepend a synthetic greeting as the first message so it never disappears
-  const messages = useMemo(() => {
-    const greeting: AgentMessage = {
-      id: "__greeting__",
-      role: "assistant",
-      content: `Hi ${greetingFirstName}! I'm your SuperPlane agent. I'll help you build and modify this canvas.`,
-      createdAt: rawMessages[0]?.createdAt ?? null,
-      toolCallId: "",
-      toolName: "",
-      toolStatus: "",
-    };
-
-    if (!bootInitialMessage) {
-      return [greeting, ...rawMessages];
-    }
-
-    const templateIntro: AgentMessage = {
-      id: "__boot_initial_message__",
-      role: "assistant",
-      content: bootInitialMessage,
-      createdAt: rawMessages[0]?.createdAt ?? null,
-      toolCallId: "",
-      toolName: "",
-      toolStatus: "",
-    };
-
-    return [greeting, templateIntro, ...rawMessages];
-  }, [rawMessages, greetingFirstName, bootInitialMessage]);
+  // Synthetic greeting (+ boot intro on a fresh canvas) always leads the transcript.
+  const messages = useMemo(
+    () => buildDisplayMessages(rawMessages, greetingFirstName, bootInitialMessage),
+    [rawMessages, greetingFirstName, bootInitialMessage],
+  );
 
   const showThinking = useThinkingIndicator(rawMessages, status);
   useAgentBootKickoff({ messagesQuery, sendMutation, chatId, canvasId, agentMode });
@@ -178,8 +160,115 @@ function ChatConversation({
   const agentBusy = status === "streaming" || outcomeMutation.isPending || outcomeActive;
   const modeDisabled = agentBusy;
 
+  const { archiveMutation, drawerOpen, setDrawerOpen, archivedView, setArchivedView, archiveCurrent } =
+    useArchiveControls(organizationId, canvasId, chatId, setError);
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="relative flex min-h-0 flex-1 flex-col">
+      <AgentChatHeader
+        onOpenArchives={() => setDrawerOpen(true)}
+        onArchiveCurrent={archiveCurrent}
+        archiving={archiveMutation.isPending}
+        canArchive={!archivedView && rawMessages.length > 0 && !agentBusy}
+      />
+
+      {archivedView ? (
+        <ArchivedTranscript
+          sessionId={archivedView.sessionId}
+          organizationId={organizationId}
+          canvasId={canvasId}
+          title={archivedView.title}
+          createdAt={archivedView.createdAt}
+          onBack={() => setArchivedView(null)}
+        />
+      ) : (
+        <ActiveChatBody
+          chatId={chatId}
+          canvasId={canvasId}
+          organizationId={organizationId}
+          isEditing={isEditing}
+          error={error}
+          messages={messages}
+          messageGroups={messageGroups}
+          messagesQuery={messagesQuery}
+          handlers={handlers}
+          scrollRef={scrollRef}
+          showThinking={showThinking}
+          status={status}
+          agentBusy={agentBusy}
+          modeDisabled={modeDisabled}
+          agentMode={agentMode}
+          onModeSwitch={onModeSwitch}
+          outcomeState={outcomeState}
+          setOutcomeState={setOutcomeState}
+          outcomeMutation={outcomeMutation}
+          sendMutation={sendMutation}
+          interruptMutation={interruptMutation}
+        />
+      )}
+
+      {drawerOpen ? (
+        <ArchivedSessionsDrawer
+          organizationId={organizationId}
+          canvasId={canvasId}
+          onSelect={(chat) => {
+            setArchivedView({ sessionId: chat.id, title: chat.title, createdAt: chat.createdAt });
+            setDrawerOpen(false);
+          }}
+          onClose={() => setDrawerOpen(false)}
+        />
+      ) : null}
+    </div>
+  );
+}
+
+function ActiveChatBody({
+  chatId,
+  canvasId,
+  organizationId,
+  isEditing,
+  error,
+  messages,
+  messageGroups,
+  messagesQuery,
+  handlers,
+  scrollRef,
+  showThinking,
+  status,
+  agentBusy,
+  modeDisabled,
+  agentMode,
+  onModeSwitch,
+  outcomeState,
+  setOutcomeState,
+  outcomeMutation,
+  sendMutation,
+  interruptMutation,
+}: {
+  chatId: string;
+  canvasId: string;
+  organizationId: string;
+  isEditing: boolean;
+  error: string | null;
+  messages: AgentMessage[];
+  messageGroups: ReturnType<typeof groupMessages>;
+  messagesQuery: ReturnType<typeof useAgentChatMessages>;
+  handlers: ConversationHandlers;
+  scrollRef: RefObject<HTMLDivElement | null>;
+  showThinking: boolean;
+  status: string;
+  agentBusy: boolean;
+  modeDisabled: boolean;
+  agentMode: AgentMode;
+  onModeSwitch: (mode: AgentMode) => void;
+  outcomeState: OutcomeState | null;
+  setOutcomeState: (update: OutcomeState | null | ((prev: OutcomeState | null) => OutcomeState | null)) => void;
+  outcomeMutation: ReturnType<typeof useDefineAgentOutcome>;
+  sendMutation: ReturnType<typeof useSendAgentChatMessage>;
+  interruptMutation: ReturnType<typeof useInterruptAgentChat>;
+}) {
+  return (
+    <>
       <ConversationTranscript
         error={error}
         canvasId={canvasId}
@@ -232,7 +321,7 @@ function ChatConversation({
         onModeSwitch={onModeSwitch}
         modeDisabled={modeDisabled}
       />
-    </div>
+    </>
   );
 }
 
