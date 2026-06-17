@@ -1,6 +1,7 @@
 package models
 
 import (
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -89,6 +90,25 @@ func AppendAgentSessionMessageInTransaction(tx *gorm.DB, msg *AgentSessionMessag
 
 func AppendAgentSessionMessage(msg *AgentSessionMessage) error {
 	return AppendAgentSessionMessageInTransaction(database.Conn(), msg)
+}
+
+// FirstUserMessageContent returns the content of the earliest user-role message
+// in a session, or "" when the session has none. Used as a fallback archive
+// title when provider summarization is unavailable.
+func FirstUserMessageContent(sessionID uuid.UUID) (string, error) {
+	var msg AgentSessionMessage
+	err := database.Conn().
+		Where("session_id = ?", sessionID).
+		Where("role = ?", AgentMessageRoleUser).
+		Order("created_at ASC, id ASC").
+		First(&msg).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return msg.Content, nil
 }
 
 // ListAgentSessionMessagesPage returns up to `limit` messages strictly older

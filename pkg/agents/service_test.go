@@ -64,6 +64,9 @@ type fakeProvider struct {
 	interruptErr        error
 	defineOutcomeErr    error
 	defineErrs          []error
+	summarizeResult     string
+	summarizeErr        error
+	deletedSessions     []string
 }
 
 func (f *fakeProvider) Name() string { return testProviderName }
@@ -122,6 +125,22 @@ func (f *fakeProvider) DefineOutcome(_ context.Context, providerSessionID string
 }
 
 func (f *fakeProvider) StreamEvents(_ context.Context, _ string, _ func(agents.ProviderEvent) error) error {
+	return nil
+}
+
+func (f *fakeProvider) SummarizeSession(_ context.Context, _ string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.summarizeErr != nil {
+		return "", f.summarizeErr
+	}
+	return f.summarizeResult, nil
+}
+
+func (f *fakeProvider) DeleteSession(_ context.Context, providerSessionID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deletedSessions = append(f.deletedSessions, providerSessionID)
 	return nil
 }
 
@@ -687,4 +706,103 @@ func TestService_InterruptSession_ClosesStuckToolRows(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, stored, 1)
 	assert.Equal(t, models.AgentToolStatusFinished, stored[0].ToolStatus)
+}
+
+func TestService_ArchiveCurrentSession_SummarizesAndStartsFresh(t *testing.T) {
+	r := support.Setup(t)
+	defer r.Close()
+
+	canvas := setupCanvasForUser(t, r)
+	provider := &fakeProvider{summarizeResult: "Canvas initialization"}
+	svc := newService(t, r, provider)
+	ctx := context.Background()
+
+	session, err := svc.EnsureSession(ctx, r.Organization.ID, r.User, canvas.ID)
+	require.NoError(t, err)
+	require.NoError(t, models.AppendAgentSessionMessage(&models.AgentSessionMessage{
+		SessionID: session.ID,
+		Role:      models.AgentMessageRoleUser,
+		Content:   "set up the canvas",
+	}))
+	oldProviderSessionID := session.ProviderSessionID
+
+	fresh, err := svc.ArchiveCurrentSession(ctx, r.Organization.ID, r.User, session.ID)
+	require.NoError(t, err)
+	require.NotNil(t, fresh)
+	assert.NotEqual(t, session.ID, fresh.ID, "archive provisions a fresh active session")
+	assert.Nil(t, fresh.ArchivedAt)
+
+	var archived models.AgentSession
+	require.NoError(t, database.Conn().Where("id = ?", session.ID).First(&archived).Error)
+	require.NotNil(t, archived.ArchivedAt)
+	assert.Equal(t, "Canvas initialization", archived.Title)
+
+	provider.mu.Lock()
+	deleted := append([]string(nil), provider.deletedSessions...)
+	provider.mu.Unlock()
+	assert.Contains(t, deleted, oldProviderSessionID, "archived session's provider context is freed")
+
+	// The archived session's transcript is retained for read-only browsing.
+	oldMsgs, err := svc.ListMessages(session.ID, uuid.Nil, 100)
+	require.NoError(t, err)
+	require.Len(t, oldMsgs, 1)
+	assert.Equal(t, "set up the canvas", oldMsgs[0].Content)
+
+	list, total, err := svc.ListArchivedSessions(ctx, r.Organization.ID, r.User, canvas.ID, 0, 10)
+	require.NoError(t, err)
+	assert.Equal(t, int64(1), total)
+	require.Len(t, list, 1)
+	assert.Equal(t, session.ID, list[0].ID)
+
+	// The fresh session is the canvas's active one.
+	active, err := svc.EnsureSession(ctx, r.Organization.ID, r.User, canvas.ID)
+	require.NoError(t, err)
+	assert.Equal(t, fresh.ID, active.ID)
+}
+
+func TestService_ArchiveCurrentSession_FallsBackToFirstUserMessage(t *testing.T) {
+	r := support.Setup(t)
+	defer r.Close()
+
+	canvas := setupCanvasForUser(t, r)
+	provider := &fakeProvider{summarizeErr: errors.New("summary unavailable")}
+	svc := newService(t, r, provider)
+	ctx := context.Background()
+
+	session, err := svc.EnsureSession(ctx, r.Organization.ID, r.User, canvas.ID)
+	require.NoError(t, err)
+	require.NoError(t, models.AppendAgentSessionMessage(&models.AgentSessionMessage{
+		SessionID: session.ID,
+		Role:      models.AgentMessageRoleUser,
+		Content:   "Fix the JIRA URL node mapping",
+	}))
+
+	fresh, err := svc.ArchiveCurrentSession(ctx, r.Organization.ID, r.User, session.ID)
+	require.NoError(t, err)
+	assert.NotEqual(t, session.ID, fresh.ID)
+
+	var archived models.AgentSession
+	require.NoError(t, database.Conn().Where("id = ?", session.ID).First(&archived).Error)
+	assert.Equal(t, "Fix the JIRA URL node mapping", archived.Title)
+}
+
+func TestService_ArchiveCurrentSession_RejectsWhileStreaming(t *testing.T) {
+	r := support.Setup(t)
+	defer r.Close()
+
+	canvas := setupCanvasForUser(t, r)
+	provider := &fakeProvider{summarizeResult: "unused"}
+	svc := newService(t, r, provider)
+	ctx := context.Background()
+
+	session, err := svc.EnsureSession(ctx, r.Organization.ID, r.User, canvas.ID)
+	require.NoError(t, err)
+	require.NoError(t, models.UpdateAgentSessionStatus(session.ID, models.AgentSessionStatusStreaming))
+
+	_, err = svc.ArchiveCurrentSession(ctx, r.Organization.ID, r.User, session.ID)
+	assert.ErrorIs(t, err, agents.ErrSessionBusy)
+
+	var unchanged models.AgentSession
+	require.NoError(t, database.Conn().Where("id = ?", session.ID).First(&unchanged).Error)
+	assert.Nil(t, unchanged.ArchivedAt, "a streaming session is not archived")
 }
