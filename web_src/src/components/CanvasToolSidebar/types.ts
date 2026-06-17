@@ -13,6 +13,7 @@ export type AgentMessage = {
   id: string;
   role: string;
   content: string;
+  reasoning?: string;
   toolName: string;
   toolCallId: string;
   toolStatus: string;
@@ -60,6 +61,7 @@ export function fromApiMessage(input: AgentsAgentChatMessage | undefined): Agent
     id: input.id,
     role: input.role ?? "",
     content: input.content ?? "",
+    reasoning: input.reasoning ?? undefined,
     toolName: input.toolName ?? "",
     toolCallId: input.toolCallId ?? "",
     toolStatus: input.toolStatus ?? "",

@@ -414,5 +414,11 @@ func TestProviderSeparatesReasoning(t *testing.T) {
 	require.Len(t, events, 2)
 	assert.Equal(t, agents.ProviderEventAssistantMessage, events[0].Type)
 	assert.Equal(t, "the answer", events[0].Text)
+	// #13: the reasoning is now surfaced on the event (both sources) rather than
+	// dropped, and is still kept out of the answer text.
+	assert.Contains(t, events[0].Reasoning, "let me think")
+	assert.Contains(t, events[0].Reasoning, "and more")
+	assert.NotContains(t, events[0].Text, "let me think")
+	assert.NotContains(t, events[0].Text, "and more")
 	assert.Equal(t, agents.ProviderEventTurnCompleted, events[1].Type)
 }

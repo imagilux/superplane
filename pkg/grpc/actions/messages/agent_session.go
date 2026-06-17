@@ -57,6 +57,7 @@ type AgentMessage struct {
 	ID         string     `json:"id"`
 	Role       string     `json:"role"`
 	Content    string     `json:"content"`
+	Reasoning  string     `json:"reasoning,omitempty"`
 	ToolCallID string     `json:"toolCallId,omitempty"`
 	ToolName   string     `json:"toolName,omitempty"`
 	ToolStatus string     `json:"toolStatus,omitempty"`

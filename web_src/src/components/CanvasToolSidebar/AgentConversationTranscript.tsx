@@ -1,5 +1,6 @@
 import { Bot, ChevronRight, Loader2, Terminal } from "lucide-react";
 import { memo, useCallback, useEffect, useMemo, useState, type RefObject } from "react";
+import { CollapseWidget } from "@/components/AgentSidebar/widgets/CollapseWidget";
 import { isSystemNotification } from "@/components/AgentSidebar/systemMessages";
 import type { RubricCategory } from "@/components/AgentSidebar/widgets/parser";
 import { RichMessage } from "@/components/AgentSidebar/widgets/RichMessage";
@@ -203,6 +204,9 @@ const MessageRow = memo(function MessageRow({
           canvasId={canvasId}
           organizationId={organizationId}
         />
+        {message.reasoning && message.reasoning.trim().length > 0 ? (
+          <CollapseWidget title="Reasoning" content={message.reasoning} />
+        ) : null}
       </div>
       {message.createdAt ? (
         <span className="mt-0.5 text-[10px] text-slate-500">{formatTime(message.createdAt)}</span>

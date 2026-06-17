@@ -28,6 +28,7 @@ type ProviderEvent struct {
 	ProviderEventID string
 	Type            ProviderEventType
 	Text            string
+	Reasoning       string
 	ToolName        string
 	ToolCallID      string
 	// ToolInput is a human-readable rendering of the tool's invocation

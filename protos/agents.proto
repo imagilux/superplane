@@ -152,4 +152,5 @@ message AgentChatMessage {
   string tool_name = 5;
   string tool_status = 6;
   google.protobuf.Timestamp created_at = 7;
+  string reasoning = 8;
 }
