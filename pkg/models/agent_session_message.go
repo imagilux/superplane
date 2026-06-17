@@ -25,6 +25,7 @@ type AgentSessionMessage struct {
 	ProviderEventID string
 	Role            string
 	Content         string
+	Reasoning       string
 	ToolCallID      string
 	ToolName        string
 	ToolStatus      string
@@ -55,8 +56,8 @@ func AppendAgentSessionMessageInTransaction(tx *gorm.DB, msg *AgentSessionMessag
 	// tool_started.
 	return tx.Exec(`
 		INSERT INTO agent_session_messages
-			(id, session_id, provider_event_id, role, content, tool_call_id, tool_name, tool_status, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			(id, session_id, provider_event_id, role, content, reasoning, tool_call_id, tool_name, tool_status, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT (session_id, provider_event_id)
 		WHERE provider_event_id <> ''
 		DO UPDATE SET
@@ -65,6 +66,7 @@ func AppendAgentSessionMessageInTransaction(tx *gorm.DB, msg *AgentSessionMessag
 				THEN agent_session_messages.content
 				ELSE COALESCE(NULLIF(EXCLUDED.content, ''), agent_session_messages.content)
 			END,
+			reasoning = COALESCE(NULLIF(EXCLUDED.reasoning, ''), agent_session_messages.reasoning),
 			tool_status = CASE
 				WHEN agent_session_messages.tool_status IN ('finished', 'failed') AND EXCLUDED.tool_status = 'started'
 				THEN agent_session_messages.tool_status
@@ -77,6 +79,7 @@ func AppendAgentSessionMessageInTransaction(tx *gorm.DB, msg *AgentSessionMessag
 		msg.ProviderEventID,
 		msg.Role,
 		msg.Content,
+		msg.Reasoning,
 		msg.ToolCallID,
 		msg.ToolName,
 		msg.ToolStatus,

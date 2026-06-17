@@ -115,7 +115,8 @@ CREATE TABLE public.agent_session_messages (
     tool_call_id text DEFAULT ''::text NOT NULL,
     tool_name text DEFAULT ''::text NOT NULL,
     tool_status character varying(20) DEFAULT ''::character varying NOT NULL,
-    created_at timestamp with time zone DEFAULT now() NOT NULL
+    created_at timestamp with time zone DEFAULT now() NOT NULL,
+    reasoning text DEFAULT ''::text NOT NULL
 );
 
 
@@ -2311,7 +2312,7 @@ SET row_security = off;
 --
 
 COPY public.schema_migrations (version, dirty) FROM stdin;
-20260617130000	f
+20260617140000	f
 \.
 
 

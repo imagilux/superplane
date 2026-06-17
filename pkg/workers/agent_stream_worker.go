@@ -692,6 +692,7 @@ func persistAssistantEvent(
 		ProviderEventID: evt.ProviderEventID,
 		Role:            models.AgentMessageRoleAssistant,
 		Content:         evt.Text,
+		Reasoning:       evt.Reasoning,
 	}, "assistant_message", publish)
 }
 
@@ -820,6 +821,7 @@ func serializeMessage(m *models.AgentSessionMessage) *messages.AgentMessage {
 		ID:         m.ID.String(),
 		Role:       m.Role,
 		Content:    m.Content,
+		Reasoning:  m.Reasoning,
 		ToolCallID: m.ToolCallID,
 		ToolName:   m.ToolName,
 		ToolStatus: m.ToolStatus,

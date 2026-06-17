@@ -185,12 +185,13 @@ func (p *Provider) runTurn(ctx context.Context, s *session) {
 	}
 
 	// Split reasoning off the answer: the dedicated reasoning_content delta field
-	// plus any inline <think>…</think> blocks. Only the clean answer is surfaced
-	// and stored in history (reasoning is ephemeral; it is dropped, not echoed back
-	// to the model). Surfacing it to the UI is a separate, deferred feature.
+	// plus any inline <think>…</think> blocks. Only the clean answer is stored in
+	// history (reasoning is ephemeral; it is not echoed back to the model), but the
+	// reasoning now rides on the assistant_message event so the UI can display it.
 	answer, inlineReasoning := splitReasoning(content.String())
-	if dropped := strings.TrimSpace(reasoning.String() + "\n" + inlineReasoning); dropped != "" {
-		log.WithFields(log.Fields{"provider_session_id": s.id, "reasoning_chars": len(dropped)}).
+	reasoningText := strings.TrimSpace(reasoning.String() + "\n" + inlineReasoning)
+	if reasoningText != "" {
+		log.WithFields(log.Fields{"provider_session_id": s.id, "reasoning_chars": len(reasoningText)}).
 			Debug("openai: separated reasoning from answer")
 	}
 
@@ -231,6 +232,7 @@ func (p *Provider) runTurn(ctx context.Context, s *session) {
 			ProviderEventID: uuid.NewString(),
 			Type:            agents.ProviderEventAssistantMessage,
 			Text:            answer,
+			Reasoning:       reasoningText,
 		})
 	}
 	// In an autonomous outcome loop, grade this iteration's result against the

@@ -78,6 +78,7 @@ func serializeMessage(message *models.AgentSessionMessage) *pb.AgentChatMessage 
 		Id:         message.ID.String(),
 		Role:       message.Role,
 		Content:    message.Content,
+		Reasoning:  message.Reasoning,
 		ToolCallId: message.ToolCallID,
 		ToolName:   message.ToolName,
 		ToolStatus: message.ToolStatus,
