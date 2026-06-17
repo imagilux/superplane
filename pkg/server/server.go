@@ -16,6 +16,7 @@ import (
 	"github.com/superplanehq/superplane/pkg/agents"
 	agenttools "github.com/superplanehq/superplane/pkg/agents/agent_tools"
 	"github.com/superplanehq/superplane/pkg/agents/anthropic"
+	"github.com/superplanehq/superplane/pkg/agents/openai"
 	"github.com/superplanehq/superplane/pkg/authorization"
 	"github.com/superplanehq/superplane/pkg/config"
 	"github.com/superplanehq/superplane/pkg/crypto"
@@ -68,6 +69,15 @@ func buildAgentService(authService authorization.Authorization) (agents.Provider
 		return provider, agents.NewService(provider, authService)
 	}
 
+	switch config.AgentProvider() {
+	case config.ProviderOpenAI:
+		return buildOpenAIAgentService(authService)
+	default:
+		return buildAnthropicAgentService(authService)
+	}
+}
+
+func buildAnthropicAgentService(authService authorization.Authorization) (agents.Provider, agentsActions.AgentsService) {
 	cfg := config.LoadAnthropicAgentConfig()
 	if !cfg.Enabled() {
 		log.Info("Anthropic managed agents disabled: missing ANTHROPIC_* env vars")
@@ -108,6 +118,31 @@ func buildAgentService(authService authorization.Authorization) (agents.Provider
 	service := agents.NewService(provider, authService)
 	log.Info("Anthropic managed agents enabled")
 	return provider, service
+}
+
+// buildOpenAIAgentService wires a generic OpenAI-compatible endpoint (a hosted
+// service or a local vLLM/llama.cpp server) as the agent backend, selected via
+// AGENT_PROVIDER=openai. The provider synthesizes sessions and the agent loop
+// client-side (see pkg/agents/openai).
+func buildOpenAIAgentService(authService authorization.Authorization) (agents.Provider, agentsActions.AgentsService) {
+	cfg := config.LoadOpenAICompatibleAgentConfig()
+	if !cfg.Enabled() {
+		log.Info("OpenAI-compatible agent provider disabled: set AGENT_BASE_URL and AGENT_MODEL")
+		return nil, nil
+	}
+
+	provider, err := openai.New(openai.Config{
+		BaseURL: cfg.BaseURL,
+		APIKey:  cfg.APIKey,
+		Model:   cfg.Model,
+	})
+	if err != nil {
+		log.WithError(err).Warn("failed to initialise OpenAI-compatible agent provider")
+		return nil, nil
+	}
+
+	log.WithField("model", cfg.Model).Info("OpenAI-compatible agent provider enabled")
+	return provider, agents.NewService(provider, authService)
 }
 
 func startWorkers(
