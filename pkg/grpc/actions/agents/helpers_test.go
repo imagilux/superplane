@@ -11,12 +11,14 @@ import (
 )
 
 type stubService struct {
-	ensureSession func(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (*models.AgentSession, error)
-	getSession    func(uuid.UUID, uuid.UUID, uuid.UUID) (*models.AgentSession, error)
-	listMessages  func(uuid.UUID, uuid.UUID, int) ([]models.AgentSessionMessage, error)
-	sendMessage   func(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, string, string) (*models.AgentSessionMessage, error)
-	interruptErr  error
-	defineErr     error
+	ensureSession  func(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (*models.AgentSession, error)
+	getSession     func(uuid.UUID, uuid.UUID, uuid.UUID) (*models.AgentSession, error)
+	listMessages   func(uuid.UUID, uuid.UUID, int) ([]models.AgentSessionMessage, error)
+	sendMessage    func(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, string, string) (*models.AgentSessionMessage, error)
+	archiveSession func(context.Context, uuid.UUID, uuid.UUID, uuid.UUID) (*models.AgentSession, error)
+	listArchived   func(context.Context, uuid.UUID, uuid.UUID, uuid.UUID, int, int) ([]models.AgentSession, int64, error)
+	interruptErr   error
+	defineErr      error
 }
 
 func (s *stubService) EnsureSession(ctx context.Context, o, u, c uuid.UUID) (*models.AgentSession, error) {
@@ -42,6 +44,14 @@ func (s *stubService) InterruptSession(ctx context.Context, o, u, id uuid.UUID) 
 
 func (s *stubService) DefineOutcome(ctx context.Context, o, u, id uuid.UUID, description, rubric string, maxIterations int) error {
 	return s.defineErr
+}
+
+func (s *stubService) ArchiveCurrentSession(ctx context.Context, o, u, id uuid.UUID) (*models.AgentSession, error) {
+	return s.archiveSession(ctx, o, u, id)
+}
+
+func (s *stubService) ListArchivedSessions(ctx context.Context, o, u, c uuid.UUID, offset, limit int) ([]models.AgentSession, int64, error) {
+	return s.listArchived(ctx, o, u, c, offset, limit)
 }
 
 func now() *time.Time {
