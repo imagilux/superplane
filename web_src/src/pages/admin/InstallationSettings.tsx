@@ -2,6 +2,7 @@ import { Text } from "@/components/Text/text";
 import { Input, InputGroup } from "@/components/Input/input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -42,6 +43,10 @@ type InstallationSettingsResponse = {
   smtp_from_email: string;
   smtp_use_tls: boolean;
   smtp_password_configured: boolean;
+  agent_provider: string;
+  agent_base_url: string;
+  agent_model: string;
+  agent_api_key_configured: boolean;
 };
 
 type SMTPFormState = {
@@ -55,12 +60,20 @@ type SMTPFormState = {
   useTLS: boolean;
 };
 
+type AgentFormState = {
+  provider: string;
+  baseURL: string;
+  model: string;
+  apiKey: string;
+};
+
 type DerivedState = {
   blockedHosts: string[];
   privateRanges: string[];
   hasNetworkChanges: boolean;
   hasIdentityChanges: boolean;
   hasSMTPChanges: boolean;
+  hasAgentChanges: boolean;
 };
 
 type NetworkPolicySectionProps = {
@@ -110,6 +123,15 @@ type SMTPFieldsProps = {
   onFieldChange: (field: keyof SMTPFormState, value: boolean | string) => void;
 };
 
+type AgentProviderSectionProps = {
+  form: AgentFormState;
+  hasChanges: boolean;
+  apiKeyConfigured: boolean;
+  saving: boolean;
+  onFieldChange: (field: keyof AgentFormState, value: string) => void;
+  onSave: () => void;
+};
+
 const emptySMTPForm: SMTPFormState = {
   enabled: false,
   host: "",
@@ -119,6 +141,13 @@ const emptySMTPForm: SMTPFormState = {
   fromName: "",
   fromEmail: "",
   useTLS: true,
+};
+
+const emptyAgentForm: AgentFormState = {
+  provider: "",
+  baseURL: "",
+  model: "",
+  apiKey: "",
 };
 
 const getErrorMessage = async (response: Response, fallback: string) => {
@@ -149,6 +178,13 @@ const toSMTPFormState = (data: InstallationSettingsResponse): SMTPFormState => (
   useTLS: data.smtp_enabled ? data.smtp_use_tls : true,
 });
 
+const toAgentFormState = (data: InstallationSettingsResponse): AgentFormState => ({
+  provider: data.agent_provider,
+  baseURL: data.agent_base_url,
+  model: data.agent_model,
+  apiKey: "",
+});
+
 const getDerivedState = (
   settings: InstallationSettingsResponse | null,
   allowPrivateNetworkAccess: boolean,
@@ -158,6 +194,7 @@ const getDerivedState = (
   ssoAutoLoginEnabled: boolean,
   ssoIdpLogoutEnabled: boolean,
   form: SMTPFormState,
+  agentForm: AgentFormState,
 ): DerivedState => {
   const hasSMTPSettings = settings?.smtp_enabled ?? false;
 
@@ -182,6 +219,12 @@ const getDerivedState = (
         form.fromEmail.trim() !== settings.smtp_from_email ||
         ((form.enabled || hasSMTPSettings) && form.useTLS !== settings.smtp_use_tls) ||
         form.password !== ""),
+    hasAgentChanges:
+      settings != null &&
+      (agentForm.provider !== settings.agent_provider ||
+        agentForm.baseURL.trim() !== settings.agent_base_url ||
+        agentForm.model.trim() !== settings.agent_model ||
+        agentForm.apiKey !== ""),
   };
 };
 
@@ -203,6 +246,23 @@ const buildSMTPRequestBody = (form: SMTPFormState) => {
 
   if (form.password !== "") {
     body.smtp_password = form.password;
+  }
+
+  return body;
+};
+
+const buildAgentRequestBody = (form: AgentFormState) => {
+  const body: Record<string, unknown> = {
+    agent_provider: form.provider,
+  };
+
+  if (form.provider === "openai") {
+    body.agent_base_url = form.baseURL.trim();
+    body.agent_model = form.model.trim();
+  }
+
+  if (form.apiKey !== "") {
+    body.agent_api_key = form.apiKey;
   }
 
   return body;
@@ -697,6 +757,96 @@ const SMTPSection = ({ form, hasChanges, passwordConfigured, saving, onFieldChan
   </div>
 );
 
+const AgentProviderSection = ({
+  form,
+  hasChanges,
+  apiKeyConfigured,
+  saving,
+  onFieldChange,
+  onSave,
+}: AgentProviderSectionProps) => (
+  <div className="rounded-xl border border-slate-200 bg-white p-6 shadow-sm">
+    <div className="flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
+      <div className="max-w-2xl">
+        <div className="inline-flex rounded-full bg-slate-100 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-700">
+          Agent Provider
+        </div>
+        <h2 className="mt-4 text-lg font-semibold text-gray-900">AI agent provider</h2>
+        <Text className="mt-2 text-sm text-gray-600">
+          Point the managed agents at a custom or local OpenAI-compatible endpoint. Per-organization providers override
+          this.
+        </Text>
+      </div>
+    </div>
+
+    <div className="mt-6 space-y-4">
+      <div>
+        <Label className="mb-2 block text-left">Provider</Label>
+        <Select value={form.provider} onValueChange={(value) => onFieldChange("provider", value)}>
+          <SelectTrigger className="w-full" data-testid="installation-agent-provider">
+            <SelectValue placeholder="Use environment default" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="anthropic">Anthropic (managed)</SelectItem>
+            <SelectItem value="openai">OpenAI-compatible</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      {form.provider === "openai" ? (
+        <div className="grid gap-4 md:grid-cols-2">
+          <div>
+            <Label className="mb-2 block text-left">Base URL</Label>
+            <InputGroup>
+              <Input
+                value={form.baseURL}
+                onChange={(event) => onFieldChange("baseURL", event.target.value)}
+                placeholder="http://localhost:8080/v1"
+              />
+            </InputGroup>
+          </div>
+
+          <div>
+            <Label className="mb-2 block text-left">Model</Label>
+            <InputGroup>
+              <Input
+                value={form.model}
+                onChange={(event) => onFieldChange("model", event.target.value)}
+                placeholder="qwen3"
+              />
+            </InputGroup>
+          </div>
+
+          <div>
+            <Label className="mb-2 block text-left">API Key</Label>
+            <InputGroup>
+              <Input
+                type="password"
+                data-testid="installation-agent-api-key"
+                value={form.apiKey}
+                onChange={(event) => onFieldChange("apiKey", event.target.value)}
+                placeholder={apiKeyConfigured ? "Leave blank to keep current key" : "Optional"}
+                className="ph-no-capture"
+              />
+            </InputGroup>
+            <Text className="mt-1 text-xs text-gray-500">
+              Optional — unauthenticated local endpoints need none.
+              {apiKeyConfigured ? " Leave blank to keep the existing key." : ""}
+            </Text>
+          </div>
+        </div>
+      ) : null}
+    </div>
+
+    <div className="mt-6 flex items-center gap-3">
+      <Button type="button" data-testid="installation-agent-save" onClick={onSave} disabled={saving || !hasChanges}>
+        {saving ? "Saving..." : "Save agent provider"}
+      </Button>
+      <Text className="text-xs text-gray-500">Agent provider changes apply to installation-wide agent sessions.</Text>
+    </div>
+  </div>
+);
+
 const useInstallationSettingsState = () => {
   const [settings, setSettings] = useState<InstallationSettingsResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -710,6 +860,8 @@ const useInstallationSettingsState = () => {
   const [savingIdentity, setSavingIdentity] = useState(false);
   const [smtpForm, setSMTPForm] = useState<SMTPFormState>(emptySMTPForm);
   const [savingSMTP, setSavingSMTP] = useState(false);
+  const [agentForm, setAgentForm] = useState<AgentFormState>(emptyAgentForm);
+  const [savingAgent, setSavingAgent] = useState(false);
 
   const applySettings = useCallback((data: InstallationSettingsResponse) => {
     setSettings(data);
@@ -720,6 +872,7 @@ const useInstallationSettingsState = () => {
     setSSOAutoLoginEnabled(data.sso_auto_login_enabled);
     setSSOIdpLogoutEnabled(data.sso_idp_logout_enabled);
     setSMTPForm(toSMTPFormState(data));
+    setAgentForm(toAgentFormState(data));
   }, []);
 
   const loadSettings = useCallback(async () => {
@@ -831,6 +984,28 @@ const useInstallationSettingsState = () => {
     }));
   }, []);
 
+  const saveAgentSettings = useCallback(async () => {
+    setSavingAgent(true);
+    try {
+      await patchSettings(
+        buildAgentRequestBody(agentForm),
+        "AI provider settings saved",
+        "Failed to save AI provider settings",
+      );
+    } catch (error) {
+      showErrorToast(error instanceof Error ? error.message : "Failed to save AI provider settings");
+    } finally {
+      setSavingAgent(false);
+    }
+  }, [patchSettings, agentForm]);
+
+  const setAgentField = useCallback((field: keyof AgentFormState, value: string) => {
+    setAgentForm((current) => ({
+      ...current,
+      [field]: value,
+    }));
+  }, []);
+
   return {
     settings,
     loading,
@@ -844,6 +1019,8 @@ const useInstallationSettingsState = () => {
     savingIdentity,
     smtpForm,
     savingSMTP,
+    agentForm,
+    savingAgent,
     setAllowPrivateNetworkAccess,
     setPasswordLoginDisabled,
     setSSOLoginHintEnabled,
@@ -851,9 +1028,11 @@ const useInstallationSettingsState = () => {
     setSSOAutoLoginEnabled,
     setSSOIdpLogoutEnabled,
     setSMTPField,
+    setAgentField,
     saveNetworkSettings,
     saveIdentitySettings,
     saveSMTPSettings,
+    saveAgentSettings,
   };
 };
 
@@ -871,6 +1050,8 @@ const InstallationSettings: React.FC = () => {
     savingIdentity,
     smtpForm,
     savingSMTP,
+    agentForm,
+    savingAgent,
     setAllowPrivateNetworkAccess,
     setPasswordLoginDisabled,
     setSSOLoginHintEnabled,
@@ -878,9 +1059,11 @@ const InstallationSettings: React.FC = () => {
     setSSOAutoLoginEnabled,
     setSSOIdpLogoutEnabled,
     setSMTPField,
+    setAgentField,
     saveNetworkSettings,
     saveIdentitySettings,
     saveSMTPSettings,
+    saveAgentSettings,
   } = useInstallationSettingsState();
 
   if (loading && !settings) {
@@ -901,6 +1084,7 @@ const InstallationSettings: React.FC = () => {
     ssoAutoLoginEnabled,
     ssoIdpLogoutEnabled,
     smtpForm,
+    agentForm,
   );
 
   return (
@@ -951,6 +1135,15 @@ const InstallationSettings: React.FC = () => {
         saving={savingSMTP}
         onFieldChange={setSMTPField}
         onSave={saveSMTPSettings}
+      />
+
+      <AgentProviderSection
+        form={agentForm}
+        hasChanges={derivedState.hasAgentChanges}
+        apiKeyConfigured={settings?.agent_api_key_configured ?? false}
+        saving={savingAgent}
+        onFieldChange={setAgentField}
+        onSave={saveAgentSettings}
       />
     </div>
   );

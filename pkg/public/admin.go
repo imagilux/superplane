@@ -61,6 +61,10 @@ type installationSettingsResponse struct {
 	SMTPFromEmail               string             `json:"smtp_from_email"`
 	SMTPUseTLS                  bool               `json:"smtp_use_tls"`
 	SMTPPasswordConfigured      bool               `json:"smtp_password_configured"`
+	AgentProvider               string             `json:"agent_provider"`
+	AgentBaseURL                string             `json:"agent_base_url"`
+	AgentModel                  string             `json:"agent_model"`
+	AgentAPIKeyConfigured       bool               `json:"agent_api_key_configured"`
 }
 
 type installationSettingsRequest struct {
@@ -79,6 +83,10 @@ type installationSettingsRequest struct {
 	SMTPFromName                *string `json:"smtp_from_name"`
 	SMTPFromEmail               *string `json:"smtp_from_email"`
 	SMTPUseTLS                  *bool   `json:"smtp_use_tls"`
+	AgentProvider               *string `json:"agent_provider"`
+	AgentBaseURL                *string `json:"agent_base_url"`
+	AgentModel                  *string `json:"agent_model"`
+	AgentAPIKey                 *string `json:"agent_api_key"`
 }
 
 func parsePagination(r *http.Request) (search string, limit, offset int) {
@@ -240,7 +248,8 @@ func (s *Server) updateInstallationSettings(ctx context.Context, req installatio
 	return database.Conn().Transaction(func(tx *gorm.DB) error {
 		if req.AllowPrivateNetworkAccess != nil || req.PasswordLoginDisabled != nil ||
 			req.SSOLoginHintEnabled != nil || req.SSOPromptNoneEnabled != nil || req.SSOAutoLoginEnabled != nil ||
-			req.SSOIdPLogoutEnabled != nil {
+			req.SSOIdPLogoutEnabled != nil ||
+			req.AgentProvider != nil || req.AgentBaseURL != nil || req.AgentModel != nil || req.AgentAPIKey != nil {
 			metadata, err := models.GetInstallationMetadataInTransaction(tx)
 			if err != nil {
 				return err
@@ -263,6 +272,25 @@ func (s *Server) updateInstallationSettings(ctx context.Context, req installatio
 			}
 			if req.SSOIdPLogoutEnabled != nil {
 				metadata.SSOIdPLogoutEnabled = *req.SSOIdPLogoutEnabled
+			}
+			if req.AgentProvider != nil {
+				switch *req.AgentProvider {
+				case "", "anthropic", models.AgentProviderTypeOpenAI:
+					metadata.AgentProvider = *req.AgentProvider
+				default:
+					return errInvalidInstallationSettingsRequest
+				}
+			}
+			if req.AgentBaseURL != nil {
+				metadata.AgentBaseURL = *req.AgentBaseURL
+			}
+			if req.AgentModel != nil {
+				metadata.AgentModel = *req.AgentModel
+			}
+			if req.AgentAPIKey != nil {
+				if err := metadata.SetAgentAPIKey(ctx, s.encryptor, *req.AgentAPIKey); err != nil {
+					return err
+				}
 			}
 			metadata.UpdatedAt = time.Now()
 
@@ -308,6 +336,10 @@ func (s *Server) buildInstallationSettingsResponse(account *models.Account) (ins
 		EffectivePrivateIPRanges:    policy.PrivateIPRanges,
 		BlockedHTTPHostsOverridden:  policy.BlockedHostsOverridden,
 		PrivateIPRangesOverridden:   policy.PrivateIPRangesOverridden,
+		AgentProvider:               metadata.AgentProvider,
+		AgentBaseURL:                metadata.AgentBaseURL,
+		AgentModel:                  metadata.AgentModel,
+		AgentAPIKeyConfigured:       metadata.HasAgentAPIKey(),
 	}
 
 	// Gate the "disable password login" toggle for the current admin: if turning
