@@ -22,25 +22,31 @@ type CanvasCleanupWorker struct {
 	semaphore           *semaphore.Weighted
 	logger              *log.Entry
 	maxResourcesPerTick int
-	sessionCleaner      agents.ProviderSessionCleaner
+	resolver            agents.Resolver
 	gitProvider         git.Provider
 }
 
+// NewCanvasCleanupWorker wraps an optional installation-wide provider. Retained
+// for callers and tests holding one provider; per-organization cleanup uses
+// NewCanvasCleanupWorkerWithResolver.
 func NewCanvasCleanupWorker(gitProvider git.Provider, providers ...agents.Provider) *CanvasCleanupWorker {
-	w := &CanvasCleanupWorker{
+	var provider agents.Provider
+	if len(providers) > 0 {
+		provider = providers[0]
+	}
+	return NewCanvasCleanupWorkerWithResolver(gitProvider, agents.StaticResolver(provider))
+}
+
+// NewCanvasCleanupWorkerWithResolver resolves the session-cleaning provider per
+// session's organization. A nil resolver disables provider cleanup.
+func NewCanvasCleanupWorkerWithResolver(gitProvider git.Provider, resolver agents.Resolver) *CanvasCleanupWorker {
+	return &CanvasCleanupWorker{
 		semaphore:           semaphore.NewWeighted(25),
 		logger:              log.WithFields(log.Fields{"worker": "CanvasCleanupWorker"}),
 		maxResourcesPerTick: 500,
+		resolver:            resolver,
 		gitProvider:         gitProvider,
 	}
-
-	if len(providers) > 0 {
-		if cleaner, ok := providers[0].(agents.ProviderSessionCleaner); ok {
-			w.sessionCleaner = cleaner
-		}
-	}
-
-	return w
 }
 
 func (w *CanvasCleanupWorker) Start(ctx context.Context) {
@@ -120,22 +126,40 @@ func (w *CanvasCleanupWorker) LockAndProcessCanvas(canvas models.Canvas) error {
 }
 
 func (w *CanvasCleanupWorker) cleanupProviderSessions(ctx context.Context, sessions []models.AgentSession) {
-	if w.sessionCleaner == nil || len(sessions) == 0 {
+	if w.resolver == nil || len(sessions) == 0 {
 		return
 	}
 
 	for _, session := range sessions {
-		if session.Provider != w.sessionCleaner.Name() {
+		provider, err := w.resolver.ProviderForOrganization(ctx, session.OrganizationID)
+		if err != nil {
+			w.logger.WithFields(log.Fields{
+				"session_id":          session.ID,
+				"provider":            session.Provider,
+				"provider_session_id": session.ProviderSessionID,
+			}).WithError(err).Warn("Skipping provider cleanup: failed to resolve provider")
+			continue
+		}
+
+		// Stateless providers (e.g. OpenAI-compatible) keep no server-side
+		// session, so they don't implement ProviderSessionCleaner — there is
+		// nothing to delete upstream. A nil provider (org with no config and no
+		// fallback) is the same case.
+		cleaner, ok := provider.(agents.ProviderSessionCleaner)
+		if !ok {
+			continue
+		}
+		if session.Provider != cleaner.Name() {
 			w.logger.WithFields(log.Fields{
 				"session_id":       session.ID,
 				"session_provider": session.Provider,
-				"cleaner_provider": w.sessionCleaner.Name(),
+				"cleaner_provider": cleaner.Name(),
 			}).Warn("Skipping provider cleanup for agent session with mismatched provider")
 			continue
 		}
 
 		cleanupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		err := w.sessionCleaner.DeleteSession(cleanupCtx, session.ProviderSessionID)
+		err = cleaner.DeleteSession(cleanupCtx, session.ProviderSessionID)
 		cancel()
 		if err != nil {
 			w.logger.WithFields(log.Fields{

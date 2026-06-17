@@ -8,15 +8,15 @@ import (
 	"github.com/coreos/go-oidc/v3/oidc"
 	log "github.com/sirupsen/logrus"
 	"github.com/superplanehq/superplane/pkg/authentication"
-	"github.com/superplanehq/superplane/pkg/authentication/sso"
+	"github.com/superplanehq/superplane/pkg/netguard"
 	pb "github.com/superplanehq/superplane/pkg/protos/oidc_providers"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
 
 // discoveryHTTPClient bounds and SSRF-guards the server-side discovery fetch
-// (see pkg/authentication/sso.NewGuardedHTTPClient).
-var discoveryHTTPClient = sso.NewGuardedHTTPClient(10 * time.Second)
+// (see pkg/netguard.NewGuardedHTTPClient).
+var discoveryHTTPClient = netguard.NewGuardedHTTPClient(10 * time.Second)
 
 // DiscoverOIDCProvider fetches the issuer's /.well-known/openid-configuration to
 // validate it and report the supported scopes and claims, so the provider form

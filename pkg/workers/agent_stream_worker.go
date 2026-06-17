@@ -41,19 +41,28 @@ var errSessionAlreadyReset = errors.New("agent session no longer streaming")
 
 // AgentStreamWorker is stateless and safe to run as competing consumers.
 type AgentStreamWorker struct {
-	provider           agents.Provider
+	resolver           agents.Resolver
 	customToolExecutor agents.CustomToolExecutor
 	rabbitMQURL        string
 	slots              chan struct{}
 }
 
+// NewAgentStreamWorker wraps a single installation-wide provider. Retained for
+// callers and tests holding one provider; per-organization selection uses
+// NewAgentStreamWorkerWithResolver.
 func NewAgentStreamWorker(provider agents.Provider, rabbitMQURL string, customToolExecutor ...agents.CustomToolExecutor) *AgentStreamWorker {
+	return NewAgentStreamWorkerWithResolver(agents.StaticResolver(provider), rabbitMQURL, customToolExecutor...)
+}
+
+// NewAgentStreamWorkerWithResolver resolves the provider per session's
+// organization, so each org's stream is served by the provider it selects.
+func NewAgentStreamWorkerWithResolver(resolver agents.Resolver, rabbitMQURL string, customToolExecutor ...agents.CustomToolExecutor) *AgentStreamWorker {
 	executor := agents.CustomToolExecutor(unsupportedCustomToolExecutor{})
 	if len(customToolExecutor) > 0 && customToolExecutor[0] != nil {
 		executor = customToolExecutor[0]
 	}
 	return &AgentStreamWorker{
-		provider:           provider,
+		resolver:           resolver,
 		customToolExecutor: executor,
 		rabbitMQURL:        rabbitMQURL,
 		slots:              make(chan struct{}, maxConcurrentStreams),
@@ -314,11 +323,21 @@ func (w *AgentStreamWorker) handleLocked(parentCtx context.Context, req messages
 		log.WithError(err).WithField("session_id", sessionID).Warn("agent stream: session not found, dropping")
 		return nil
 	}
-	if session.Provider != w.provider.Name() {
-		// Another replica owns this provider; drop rather than requeue.
+
+	provider, err := w.resolver.ProviderForOrganization(parentCtx, session.OrganizationID)
+	if err != nil {
+		log.WithError(err).WithField("session_id", sessionID).Warn("agent stream: failed to resolve provider, dropping")
+		return nil
+	}
+	if provider == nil {
+		log.WithField("session_id", sessionID).Warn("agent stream: no provider for organization, dropping")
+		return nil
+	}
+	if session.Provider != provider.Name() {
+		// Another replica/provider owns this session; drop rather than requeue.
 		log.WithFields(log.Fields{
 			"session_provider": session.Provider,
-			"local_provider":   w.provider.Name(),
+			"local_provider":   provider.Name(),
 		}).Warn("agent stream: provider mismatch, dropping")
 		return nil
 	}
@@ -341,7 +360,7 @@ func (w *AgentStreamWorker) handleLocked(parentCtx context.Context, req messages
 		turnStartedAt := session.UpdatedAt
 		publish(messages.AgentSessionEventMessage{Event: "stream_started", Status: models.AgentSessionStatusStreaming})
 
-		streamErr := w.streamProviderTurn(parentCtx, session, publish)
+		streamErr := w.streamProviderTurn(parentCtx, session, provider, publish)
 		closeOpenTools(sessionID, publish)
 
 		if streamErr != nil {
@@ -395,6 +414,7 @@ func (w *AgentStreamWorker) handleLocked(parentCtx context.Context, req messages
 func (w *AgentStreamWorker) streamProviderTurn(
 	parentCtx context.Context,
 	session *models.AgentSession,
+	provider agents.Provider,
 	publish func(messages.AgentSessionEventMessage),
 ) error {
 	ctx, cancel := context.WithTimeout(parentCtx, agentStreamTimeout)
@@ -405,7 +425,7 @@ func (w *AgentStreamWorker) streamProviderTurn(
 
 	for {
 		customTools.clearRequirement()
-		err := w.provider.StreamEvents(ctx, session.ProviderSessionID, func(evt agents.ProviderEvent) error {
+		err := provider.StreamEvents(ctx, session.ProviderSessionID, func(evt agents.ProviderEvent) error {
 			return handleProviderEvent(session.ID, evt, publish, &streamErr, customTools)
 		})
 
@@ -422,7 +442,7 @@ func (w *AgentStreamWorker) streamProviderTurn(
 			return streamErr
 		}
 
-		if err := w.executeAndSendCustomToolResults(ctx, session, customTools, publish); err != nil {
+		if err := w.executeAndSendCustomToolResults(ctx, session, provider, customTools, publish); err != nil {
 			return err
 		}
 	}
@@ -484,10 +504,11 @@ func handleProviderEvent(
 func (w *AgentStreamWorker) executeAndSendCustomToolResults(
 	ctx context.Context,
 	session *models.AgentSession,
+	provider agents.Provider,
 	customTools *customToolTurnState,
 	publish func(messages.AgentSessionEventMessage),
 ) error {
-	sender, ok := w.provider.(agents.CustomToolResultSender)
+	sender, ok := provider.(agents.CustomToolResultSender)
 	if !ok {
 		return fmt.Errorf("provider does not support custom tool results")
 	}

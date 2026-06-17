@@ -1,0 +1,152 @@
+syntax = "proto3";
+
+package Superplane.AgentProviders;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+import "protoc-gen-openapiv2/options/annotations.proto";
+
+option go_package = "github.com/superplanehq/superplane/pkg/protos/agent_providers";
+
+option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_swagger) = {
+  info: {
+    title: "SuperPlane Agent Providers API";
+    version: "1.0";
+    description: "API for managing per-organization AI agent providers";
+    contact: {
+      name: "API Support";
+      email: "support@superplane.com";
+    };
+  };
+  schemes: HTTPS;
+  schemes: HTTP;
+  consumes: "application/json";
+  produces: "application/json";
+};
+
+service AgentProviders {
+  rpc CreateAgentProvider(CreateAgentProviderRequest) returns (CreateAgentProviderResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/agent-providers"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Create an agent provider";
+      description: "Creates a new AI agent provider in the organization";
+      tags: "AgentProviders";
+    };
+  }
+
+  rpc ListAgentProviders(ListAgentProvidersRequest) returns (ListAgentProvidersResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/agent-providers"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List agent providers";
+      description: "Returns all AI agent providers in the organization";
+      tags: "AgentProviders";
+    };
+  }
+
+  rpc DescribeAgentProvider(DescribeAgentProviderRequest) returns (DescribeAgentProviderResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/agent-providers/{id}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Describe an agent provider";
+      description: "Returns details of a specific AI agent provider";
+      tags: "AgentProviders";
+    };
+  }
+
+  rpc UpdateAgentProvider(UpdateAgentProviderRequest) returns (UpdateAgentProviderResponse) {
+    option (google.api.http) = {
+      patch: "/api/v1/agent-providers/{id}"
+      body: "*"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Update an agent provider";
+      description: "Updates an AI agent provider. The API key is write-only; omit it to keep the existing value.";
+      tags: "AgentProviders";
+    };
+  }
+
+  rpc DeleteAgentProvider(DeleteAgentProviderRequest) returns (DeleteAgentProviderResponse) {
+    option (google.api.http) = {
+      delete: "/api/v1/agent-providers/{id}"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Delete an agent provider";
+      description: "Deletes an AI agent provider";
+      tags: "AgentProviders";
+    };
+  }
+}
+
+// AgentProvider is the API representation of a per-organization AI agent provider.
+// The API key is never returned; has_api_key reports whether one is set.
+message AgentProvider {
+  string id = 1;
+  string slug = 2;
+  string display_name = 3;
+  string type = 4;
+  string base_url = 5;
+  string model = 6;
+  bool has_api_key = 7;
+  bool enabled = 8;
+  string organization_id = 9;
+  string created_by = 10;
+  google.protobuf.Timestamp created_at = 11;
+  google.protobuf.Timestamp updated_at = 12;
+}
+
+message CreateAgentProviderRequest {
+  string slug = 1;
+  string display_name = 2;
+  string type = 3;
+  string base_url = 4;
+  string model = 5;
+  // api_key is optional: unauthenticated local endpoints need none.
+  string api_key = 6;
+  bool enabled = 7;
+}
+
+message CreateAgentProviderResponse {
+  AgentProvider provider = 1;
+}
+
+message ListAgentProvidersRequest {}
+
+message ListAgentProvidersResponse {
+  repeated AgentProvider providers = 1;
+}
+
+message DescribeAgentProviderRequest {
+  string id = 1;
+}
+
+message DescribeAgentProviderResponse {
+  AgentProvider provider = 1;
+}
+
+// UpdateAgentProviderRequest carries the full desired state of the editable
+// fields. slug and type are immutable. api_key is write-only: empty means keep
+// the existing key.
+message UpdateAgentProviderRequest {
+  string id = 1;
+  string display_name = 2;
+  string base_url = 3;
+  string model = 4;
+  string api_key = 5;
+  bool enabled = 6;
+}
+
+message UpdateAgentProviderResponse {
+  AgentProvider provider = 1;
+}
+
+message DeleteAgentProviderRequest {
+  string id = 1;
+}
+
+message DeleteAgentProviderResponse {}

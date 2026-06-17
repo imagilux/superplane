@@ -18,6 +18,7 @@ import { ServiceAccounts } from "./ServiceAccounts";
 import { ServiceAccountDetail } from "./ServiceAccountDetail";
 import { SingleSignOn } from "./SingleSignOn";
 import { SingleSignOnDetail } from "./SingleSignOnDetail";
+import { AgentProviders } from "./AgentProviders";
 import { Usage } from "./Usage";
 import SuperplaneLogo from "@/assets/superplane.svg";
 import { isUsagePageForced } from "@/lib/env";
@@ -35,6 +36,7 @@ import {
   Plug,
   Settings,
   Shield,
+  Sparkles,
   User as UserIcon,
   Users,
 } from "lucide-react";
@@ -115,6 +117,7 @@ export function OrganizationSettings() {
     "secrets",
     "service-accounts",
     "sso",
+    "agent-providers",
     "billing",
   ];
   const pathSegments = location.pathname?.split("/").filter(Boolean) || [];
@@ -170,6 +173,13 @@ export function OrganizationSettings() {
       href: `/${organizationId}/settings/sso`,
       Icon: KeyRound,
       permission: { resource: "oidc_providers", action: "read" },
+    },
+    {
+      id: "agent-providers",
+      label: "Agent Providers",
+      href: `/${organizationId}/settings/agent-providers`,
+      Icon: Sparkles,
+      permission: { resource: "agent_providers", action: "read" },
     },
     {
       id: "groups",
@@ -236,6 +246,9 @@ export function OrganizationSettings() {
     if (link.id === "sso" && currentSection === "sso") {
       return true;
     }
+    if (link.id === "agent-providers" && currentSection === "agent-providers") {
+      return true;
+    }
     return currentSection === link.id;
   };
 
@@ -287,6 +300,10 @@ export function OrganizationSettings() {
     sso: {
       title: "Single Sign-On",
       description: "Let members sign in through your organization's identity provider.",
+    },
+    "agent-providers": {
+      title: "Agent Providers",
+      description: "Connect a custom or local OpenAI-compatible endpoint to power this organization's agents.",
     },
     profile: {
       title: "Profile",
@@ -582,6 +599,14 @@ export function OrganizationSettings() {
               element={
                 <RequirePermission resource="oidc_providers" action="read">
                   <SingleSignOnDetail organizationId={organizationId || ""} />
+                </RequirePermission>
+              }
+            />
+            <Route
+              path="agent-providers"
+              element={
+                <RequirePermission resource="agent_providers" action="read">
+                  <AgentProviders organizationId={organizationId || ""} />
                 </RequirePermission>
               }
             />

@@ -22,11 +22,25 @@ type OrganizationCleanupWorker struct {
 	gitProvider  git.Provider
 }
 
+// NewOrganizationCleanupWorker wraps an optional installation-wide provider.
+// Retained for callers and tests; per-organization cleanup uses
+// NewOrganizationCleanupWorkerWithResolver.
 func NewOrganizationCleanupWorker(gitProvider git.Provider, providers ...agents.Provider) *OrganizationCleanupWorker {
 	return &OrganizationCleanupWorker{
 		semaphore:    semaphore.NewWeighted(10),
 		logger:       log.WithFields(log.Fields{"worker": "OrganizationCleanupWorker"}),
 		canvasWorker: NewCanvasCleanupWorker(gitProvider, providers...),
+		gitProvider:  gitProvider,
+	}
+}
+
+// NewOrganizationCleanupWorkerWithResolver resolves the session-cleaning
+// provider per session's organization (via the underlying canvas worker).
+func NewOrganizationCleanupWorkerWithResolver(gitProvider git.Provider, resolver agents.Resolver) *OrganizationCleanupWorker {
+	return &OrganizationCleanupWorker{
+		semaphore:    semaphore.NewWeighted(10),
+		logger:       log.WithFields(log.Fields{"worker": "OrganizationCleanupWorker"}),
+		canvasWorker: NewCanvasCleanupWorkerWithResolver(gitProvider, resolver),
 		gitProvider:  gitProvider,
 	}
 }
