@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -155,9 +156,16 @@ func claimString(m map[string]any, key string) string {
 	return ""
 }
 
+// claimBool reads a boolean claim. The OIDC spec types email_verified as a JSON
+// boolean, but some IdPs emit it as the string "true"/"false"; accept both so a
+// standards-bending provider does not wrongly fail the email_verified gate.
 func claimBool(m map[string]any, key string) bool {
-	if v, ok := m[key].(bool); ok {
+	switch v := m[key].(type) {
+	case bool:
 		return v
+	case string:
+		b, err := strconv.ParseBool(v)
+		return err == nil && b
 	}
 	return false
 }

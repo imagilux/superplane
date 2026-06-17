@@ -998,7 +998,17 @@ func allowSignupFromRequest(r *http.Request) bool {
 }
 
 func updateAccountProviders(encryptor crypto.Encryptor, account *models.Account, gothUser goth.User) error {
-	accessToken, err := encryptor.Encrypt(context.Background(), []byte(gothUser.AccessToken), []byte(gothUser.Email))
+	email := []byte(gothUser.Email)
+	accessToken, err := encryptor.Encrypt(context.Background(), []byte(gothUser.AccessToken), email)
+	if err != nil {
+		return err
+	}
+
+	// Encrypt the refresh token at rest too. It is at least as sensitive as the
+	// access token (it mints fresh ones at the IdP), and OIDC providers configured
+	// with offline_access do issue one. Same scheme as the access token: AES-GCM
+	// with the account email as associated data, base64-encoded for the text column.
+	refreshToken, err := encryptor.Encrypt(context.Background(), []byte(gothUser.RefreshToken), email)
 	if err != nil {
 		return err
 	}
@@ -1012,7 +1022,7 @@ func updateAccountProviders(encryptor crypto.Encryptor, account *models.Account,
 		Name:         gothUser.Name,
 		AvatarURL:    gothUser.AvatarURL,
 		AccessToken:  base64.StdEncoding.EncodeToString(accessToken),
-		RefreshToken: gothUser.RefreshToken,
+		RefreshToken: base64.StdEncoding.EncodeToString(refreshToken),
 	}
 	if !gothUser.ExpiresAt.IsZero() {
 		accountProvider.TokenExpiresAt = &gothUser.ExpiresAt
@@ -1060,7 +1070,10 @@ func isValidRedirectURL(redirectURL string) bool {
 		return false
 	}
 
-	if len(redirectURL) > 1 && redirectURL[1] == '/' {
+	// Reject protocol-relative targets. "//host" is the obvious form; "/\host" is
+	// the same attack via a backslash, which browsers normalize to "/", so
+	// "/\evil.com" would navigate to //evil.com. Treat both second characters alike.
+	if len(redirectURL) > 1 && (redirectURL[1] == '/' || redirectURL[1] == '\\') {
 		return false
 	}
 
