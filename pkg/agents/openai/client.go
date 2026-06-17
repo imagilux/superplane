@@ -70,8 +70,12 @@ type chunkChoice struct {
 }
 
 type chunkDelta struct {
-	Content   string               `json:"content"`
-	ToolCalls []chunkToolCallDelta `json:"tool_calls"`
+	Content string `json:"content"`
+	// Reasoning models stream chain-of-thought separately from the answer.
+	// reasoning_content is the vLLM/DeepSeek convention; reasoning is a variant.
+	ReasoningContent string               `json:"reasoning_content"`
+	Reasoning        string               `json:"reasoning"`
+	ToolCalls        []chunkToolCallDelta `json:"tool_calls"`
 }
 
 // chunkToolCallDelta is a streamed fragment of a tool call: the id + name arrive

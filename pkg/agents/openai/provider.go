@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	log "github.com/sirupsen/logrus"
 	"github.com/superplanehq/superplane/pkg/agents"
 )
 
@@ -154,7 +155,7 @@ func (p *Provider) SendMessage(_ context.Context, providerSessionID, message str
 // precede the results), surfaces each call, then suspends — the worker executes
 // the tools and calls SendCustomToolResults, which resumes the loop.
 func (p *Provider) runTurn(ctx context.Context, s *session) {
-	var sb strings.Builder
+	var content, reasoning strings.Builder
 	tools := newToolCallAccumulator()
 	var finishReason string
 
@@ -163,9 +164,9 @@ func (p *Provider) runTurn(ctx context.Context, s *session) {
 			return errors.New(chunk.Error.Message)
 		}
 		for _, choice := range chunk.Choices {
-			if choice.Delta.Content != "" {
-				sb.WriteString(choice.Delta.Content)
-			}
+			content.WriteString(choice.Delta.Content)
+			reasoning.WriteString(choice.Delta.ReasoningContent)
+			reasoning.WriteString(choice.Delta.Reasoning)
 			tools.add(choice.Delta.ToolCalls)
 			if choice.FinishReason != "" {
 				finishReason = choice.FinishReason
@@ -184,11 +185,19 @@ func (p *Provider) runTurn(ctx context.Context, s *session) {
 		return
 	}
 
-	text := sb.String()
-	toolCalls := tools.finalize()
+	// Split reasoning off the answer: the dedicated reasoning_content delta field
+	// plus any inline <think>…</think> blocks. Only the clean answer is surfaced
+	// and stored in history (reasoning is ephemeral; it is dropped, not echoed back
+	// to the model). Surfacing it to the UI is a separate, deferred feature.
+	answer, inlineReasoning := splitReasoning(content.String())
+	if dropped := strings.TrimSpace(reasoning.String() + "\n" + inlineReasoning); dropped != "" {
+		log.WithFields(log.Fields{"provider_session_id": s.id, "reasoning_chars": len(dropped)}).
+			Debug("openai: separated reasoning from answer")
+	}
 
+	toolCalls := tools.finalize()
 	if finishReason == "tool_calls" || len(toolCalls) > 0 {
-		s.appendHistory(chatMessage{Role: "assistant", Content: text, ToolCalls: toolCalls})
+		s.appendHistory(chatMessage{Role: "assistant", Content: answer, ToolCalls: toolCalls})
 		ids := make([]string, 0, len(toolCalls))
 		for _, tc := range toolCalls {
 			s.enqueue(agents.ProviderEvent{
@@ -212,12 +221,16 @@ func (p *Provider) runTurn(ctx context.Context, s *session) {
 		return
 	}
 
-	s.appendHistory(chatMessage{Role: "assistant", Content: text})
-	s.enqueue(agents.ProviderEvent{
-		ProviderEventID: uuid.NewString(),
-		Type:            agents.ProviderEventAssistantMessage,
-		Text:            text,
-	})
+	s.appendHistory(chatMessage{Role: "assistant", Content: answer})
+	// Skip an empty assistant_message (e.g. a reasoning-only turn with no answer);
+	// always emit the terminal event.
+	if answer != "" {
+		s.enqueue(agents.ProviderEvent{
+			ProviderEventID: uuid.NewString(),
+			Type:            agents.ProviderEventAssistantMessage,
+			Text:            answer,
+		})
+	}
 	s.enqueue(agents.ProviderEvent{Type: agents.ProviderEventTurnCompleted})
 }
 

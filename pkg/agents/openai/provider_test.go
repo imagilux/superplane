@@ -283,3 +283,46 @@ func TestProviderToolCallRoundTrip(t *testing.T) {
 	assert.True(t, sawAssistantToolCalls, "assistant message with tool_calls must precede tool results")
 	assert.True(t, sawToolResult, "tool result message with matching tool_call_id")
 }
+
+func TestSplitReasoning(t *testing.T) {
+	cases := []struct{ name, in, answer, reasoning string }{
+		{"plain", "plain answer", "plain answer", ""},
+		{"leading think", "<think>weigh options</think>final answer", "final answer", "weigh options"},
+		{"mid think", "a<think>mid</think>b", "ab", "mid"},
+		{"unterminated", "<think>only reasoning, no answer", "", "only reasoning, no answer"},
+		{"answer then open think", "answer then <think>late stuff", "answer then", "late stuff"},
+	}
+	for _, c := range cases {
+		a, r := splitReasoning(c.in)
+		assert.Equalf(t, c.answer, a, "%s: answer", c.name)
+		assert.Equalf(t, c.reasoning, r, "%s: reasoning", c.name)
+	}
+}
+
+func TestProviderSeparatesReasoning(t *testing.T) {
+	// One frame carries reasoning_content, the next an answer with an inline
+	// <think> block; both reasoning sources must be stripped from what is surfaced.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"reasoning_content":"let me think"},"finish_reason":null}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{"content":"<think>and more</think>the answer"},"finish_reason":null}]}`+"\n\n")
+		fmt.Fprint(w, `data: {"choices":[{"delta":{},"finish_reason":"stop"}]}`+"\n\n")
+		fmt.Fprint(w, "data: [DONE]\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}))
+	defer srv.Close()
+
+	p, err := New(Config{BaseURL: srv.URL, Model: "m", HTTPClient: srv.Client()})
+	require.NoError(t, err)
+	res, err := p.CreateSession(context.Background(), agents.CreateSessionOptions{})
+	require.NoError(t, err)
+	require.NoError(t, p.SendMessage(context.Background(), res.ProviderSessionID, "q", agents.SendMessageOptions{}))
+
+	events := collect(t, p, res.ProviderSessionID)
+	require.Len(t, events, 2)
+	assert.Equal(t, agents.ProviderEventAssistantMessage, events[0].Type)
+	assert.Equal(t, "the answer", events[0].Text)
+	assert.Equal(t, agents.ProviderEventTurnCompleted, events[1].Type)
+}
