@@ -240,6 +240,8 @@ func TestAgentRoutesRequireManagedAgentsFeature(t *testing.T) {
 		pbAgents.Agents_GetCanvasAgentChat_FullMethodName,
 		pbAgents.Agents_SendAgentChatMessage_FullMethodName,
 		pbAgents.Agents_ListAgentChatMessages_FullMethodName,
+		pbAgents.Agents_ArchiveAgentChat_FullMethodName,
+		pbAgents.Agents_ListArchivedAgentChats_FullMethodName,
 	}
 
 	for _, route := range routes {
