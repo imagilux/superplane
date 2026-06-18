@@ -81,6 +81,28 @@ service Agents {
       tags: "Agent";
     };
   }
+
+  rpc ArchiveAgentChat(ArchiveAgentChatRequest) returns (ArchiveAgentChatResponse) {
+    option (google.api.http) = {
+      post: "/api/v1/agents/chats/{chat_id}/archive"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "Archive the current chat and start fresh";
+      description: "Freezes the chat under a generated title (a one-line summary of the conversation) and returns a fresh, empty active chat for the canvas. The archived transcript stays browsable read-only.";
+      tags: "Agent";
+    };
+  }
+
+  rpc ListArchivedAgentChats(ListArchivedAgentChatsRequest) returns (ListArchivedAgentChatsResponse) {
+    option (google.api.http) = {
+      get: "/api/v1/agents/canvases/{canvas_id}/archived-chats"
+    };
+    option (grpc.gateway.protoc_gen_openapiv2.options.openapiv2_operation) = {
+      summary: "List archived chats for a canvas";
+      description: "Returns the user's archived chats for the canvas, newest first, paginated.";
+      tags: "Agent";
+    };
+  }
 }
 
 enum AgentMode {
@@ -135,6 +157,30 @@ message DefineAgentOutcomeRequest {
 
 message DefineAgentOutcomeResponse {}
 
+message ArchiveAgentChatRequest {
+  string chat_id = 1;
+}
+
+message ArchiveAgentChatResponse {
+  // The fresh active chat provisioned in place of the archived one.
+  AgentChatInfo chat = 1;
+}
+
+message ListArchivedAgentChatsRequest {
+  string canvas_id = 1;
+  // 1-based page number; defaults to 1 when <= 0.
+  int32 page = 2;
+  // Items per page; defaults to a server-side value when <= 0.
+  int32 page_size = 3;
+}
+
+message ListArchivedAgentChatsResponse {
+  repeated AgentChatInfo chats = 1;
+  int32 total = 2;
+  int32 page = 3;
+  int32 page_size = 4;
+}
+
 message AgentChatInfo {
   string id = 1;
   string canvas_id = 2;
@@ -142,6 +188,8 @@ message AgentChatInfo {
   string status = 4;
   google.protobuf.Timestamp created_at = 5;
   google.protobuf.Timestamp updated_at = 6;
+  string title = 7;
+  google.protobuf.Timestamp archived_at = 8;
 }
 
 message AgentChatMessage {

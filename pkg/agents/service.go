@@ -208,6 +208,105 @@ func closeOpenToolsForSession(sessionID uuid.UUID) {
 	}
 }
 
+// ArchiveCurrentSession freezes the canvas's active session under a generated
+// title and provisions a fresh active session in its place, giving the agent a
+// clean context. The title is the provider's one-line summary of the
+// conversation, falling back to the first user message. Rejected while the
+// session is streaming; the archived session's messages are retained for
+// read-only browsing. Returns the fresh active session.
+func (s *Service) ArchiveCurrentSession(ctx context.Context, organizationID, userID, sessionID uuid.UUID) (*models.AgentSession, error) {
+	if err := s.checkAgentPermission(ctx, userID.String(), organizationID.String()); err != nil {
+		return nil, err
+	}
+
+	session, err := s.GetSession(organizationID, userID, sessionID)
+	if err != nil {
+		return nil, fmt.Errorf("get session: %w", err)
+	}
+	if session.ArchivedAt != nil {
+		return nil, fmt.Errorf("session already archived")
+	}
+	if session.Status == models.AgentSessionStatusStreaming {
+		return nil, ErrSessionBusy
+	}
+
+	provider, err := s.providerForOrg(ctx, session.OrganizationID)
+	if err != nil {
+		return nil, err
+	}
+
+	title := s.archiveTitle(ctx, provider, session)
+
+	// Archive the active row under a row lock so the partial unique index frees
+	// for a fresh active session. The lock re-checks streaming to close the gap
+	// opened by the summary network call above.
+	err = database.Conn().Transaction(func(tx *gorm.DB) error {
+		locked, err := models.LockAgentSessionInTransaction(tx, sessionID)
+		if err != nil {
+			return err
+		}
+		if locked.Status == models.AgentSessionStatusStreaming {
+			return ErrSessionBusy
+		}
+		if locked.ArchivedAt != nil {
+			return nil
+		}
+		_, err = models.ArchiveAgentSessionInTransaction(tx, sessionID, title)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Best-effort: free the archived session's provider-side context (the
+	// OpenAI provider's in-memory history). The DB row is already archived.
+	s.cleanupProviderSession(ctx, provider, session.ProviderSessionID)
+
+	fresh, err := s.provisionSession(ctx, session.OrganizationID, session.UserID, session.CanvasID)
+	if err != nil {
+		return nil, fmt.Errorf("provision fresh session after archive: %w", err)
+	}
+	return fresh, nil
+}
+
+// archiveTitle derives a short title for an archived session: the provider's
+// summary when available, else the first user message (condensed), else a
+// generic label. Never errors — archiving must proceed regardless.
+func (s *Service) archiveTitle(ctx context.Context, provider Provider, session *models.AgentSession) string {
+	if summarizer, ok := provider.(ProviderSessionSummarizer); ok {
+		if title, err := summarizer.SummarizeSession(ctx, session.ProviderSessionID); err != nil {
+			log.WithError(err).WithField("session_id", session.ID).Info("archive: summary unavailable, using fallback title")
+		} else if t := strings.TrimSpace(title); t != "" {
+			return t
+		}
+	}
+	if first, err := models.FirstUserMessageContent(session.ID); err != nil {
+		log.WithError(err).WithField("session_id", session.ID).Warn("archive: failed to load fallback title source")
+	} else if t := condenseTitle(first); t != "" {
+		return t
+	}
+	return "Untitled conversation"
+}
+
+// condenseTitle collapses whitespace and caps a fallback title at 80 runes.
+func condenseTitle(content string) string {
+	title := strings.Join(strings.Fields(content), " ")
+	const maxRunes = 80
+	if runes := []rune(title); len(runes) > maxRunes {
+		return strings.TrimSpace(string(runes[:maxRunes])) + "…"
+	}
+	return title
+}
+
+// ListArchivedSessions returns a page of the user's archived sessions for a
+// canvas (newest first) plus the total archived count.
+func (s *Service) ListArchivedSessions(ctx context.Context, organizationID, userID, canvasID uuid.UUID, offset, limit int) ([]models.AgentSession, int64, error) {
+	if err := s.checkAgentPermission(ctx, userID.String(), organizationID.String()); err != nil {
+		return nil, 0, err
+	}
+	return models.ListArchivedAgentSessionsByCanvas(organizationID, userID, canvasID, offset, limit)
+}
+
 func (s *Service) DefineOutcome(ctx context.Context, organizationID, userID, sessionID uuid.UUID, description, rubric string, maxIterations int) error {
 	session, err := s.GetSession(organizationID, userID, sessionID)
 	if err != nil {
@@ -505,7 +604,7 @@ func (s *Service) checkAgentPermission(ctx context.Context, userID, organization
 }
 
 func findCanvasSession(tx *gorm.DB, orgID, userID, canvasID uuid.UUID) (*models.AgentSession, error) {
-	session, err := models.FindAgentSessionByCanvasInTransaction(tx, orgID, userID, canvasID)
+	session, err := models.FindActiveAgentSessionByCanvasInTransaction(tx, orgID, userID, canvasID)
 	if err == nil {
 		return session, nil
 	}

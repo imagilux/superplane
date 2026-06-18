@@ -25,8 +25,10 @@ type AgentSession struct {
 	Provider          string
 	ProviderSessionID string
 	Status            string
+	Title             string
 	LastActiveAt      *time.Time
 	HeartbeatAt       *time.Time
+	ArchivedAt        *time.Time
 	CreatedAt         *time.Time
 	UpdatedAt         *time.Time
 }
@@ -72,18 +74,67 @@ func FindAgentSessionForUser(organizationID, userID, sessionID uuid.UUID) (*Agen
 	return FindAgentSessionForUserInTransaction(database.Conn(), organizationID, userID, sessionID)
 }
 
-func FindAgentSessionByCanvasInTransaction(tx *gorm.DB, organizationID, userID, canvasID uuid.UUID) (*AgentSession, error) {
+// FindActiveAgentSessionByCanvasInTransaction returns the canvas's single
+// non-archived session for the user. Archived sessions (archived_at IS NOT NULL)
+// are excluded — they are browsable history, not the live chat. The partial
+// unique index agent_sessions_active_user_canvas_idx guarantees at most one.
+func FindActiveAgentSessionByCanvasInTransaction(tx *gorm.DB, organizationID, userID, canvasID uuid.UUID) (*AgentSession, error) {
 	var session AgentSession
 	err := tx.
 		Where("organization_id = ?", organizationID).
 		Where("user_id = ?", userID).
 		Where("canvas_id = ?", canvasID).
+		Where("archived_at IS NULL").
 		First(&session).
 		Error
 	if err != nil {
 		return nil, err
 	}
 	return &session, nil
+}
+
+// ArchiveAgentSessionInTransaction freezes the active session under a title and
+// stamps archived_at. The archived_at IS NULL guard makes a double-archive a
+// no-op (RowsAffected == 0), so the caller can detect an already-archived row.
+func ArchiveAgentSessionInTransaction(tx *gorm.DB, sessionID uuid.UUID, title string) (int64, error) {
+	now := time.Now()
+	result := tx.Model(&AgentSession{}).
+		Where("id = ?", sessionID).
+		Where("archived_at IS NULL").
+		Updates(map[string]any{
+			"title":       title,
+			"archived_at": &now,
+			"updated_at":  &now,
+		})
+	return result.RowsAffected, result.Error
+}
+
+// ListArchivedAgentSessionsByCanvas returns a page of the user's archived
+// sessions for a canvas (newest first) plus the total archived count, backing
+// the archived-sessions drawer's pagination.
+func ListArchivedAgentSessionsByCanvas(organizationID, userID, canvasID uuid.UUID, offset, limit int) ([]AgentSession, int64, error) {
+	archived := func() *gorm.DB {
+		return database.Conn().Model(&AgentSession{}).
+			Where("organization_id = ?", organizationID).
+			Where("user_id = ?", userID).
+			Where("canvas_id = ?", canvasID).
+			Where("archived_at IS NOT NULL")
+	}
+
+	var total int64
+	if err := archived().Count(&total).Error; err != nil {
+		return nil, 0, err
+	}
+
+	var sessions []AgentSession
+	if err := archived().
+		Order("created_at DESC, id DESC").
+		Offset(offset).
+		Limit(limit).
+		Find(&sessions).Error; err != nil {
+		return nil, 0, err
+	}
+	return sessions, total, nil
 }
 
 func ListAgentSessionsForCanvasInTransaction(tx *gorm.DB, organizationID, canvasID uuid.UUID) ([]AgentSession, error) {

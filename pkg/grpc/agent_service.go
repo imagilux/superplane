@@ -80,3 +80,19 @@ func (s *AgentsService) DefineAgentOutcome(ctx context.Context, req *pb.DefineAg
 	}
 	return agentsActions.DefineAgentOutcome(ctx, s.service, orgID, userID, req)
 }
+
+func (s *AgentsService) ArchiveAgentChat(ctx context.Context, req *pb.ArchiveAgentChatRequest) (*pb.ArchiveAgentChatResponse, error) {
+	orgID, userID, err := s.requestContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return agentsActions.ArchiveAgentChat(ctx, s.service, orgID, userID, req)
+}
+
+func (s *AgentsService) ListArchivedAgentChats(ctx context.Context, req *pb.ListArchivedAgentChatsRequest) (*pb.ListArchivedAgentChatsResponse, error) {
+	orgID, userID, err := s.requestContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return agentsActions.ListArchivedAgentChats(ctx, s.service, orgID, userID, req)
+}

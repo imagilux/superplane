@@ -516,3 +516,61 @@ func TestProviderSeparatesReasoning(t *testing.T) {
 	assert.NotContains(t, events[0].Text, "and more")
 	assert.Equal(t, agents.ProviderEventTurnCompleted, events[1].Type)
 }
+
+func TestProviderSummarizeSession(t *testing.T) {
+	var sawPrompt bool
+	srv := streamingServer(t, []string{"JIRA URL ", "correction"}, func(_ *http.Request, body []byte) {
+		if strings.Contains(string(body), "Summarize this conversation") {
+			sawPrompt = true
+		}
+	})
+	defer srv.Close()
+
+	p, err := New(Config{BaseURL: srv.URL, Model: "m", HTTPClient: srv.Client()})
+	require.NoError(t, err)
+
+	res, err := p.CreateSession(context.Background(), agents.CreateSessionOptions{})
+	require.NoError(t, err)
+
+	title, err := p.SummarizeSession(context.Background(), res.ProviderSessionID)
+	require.NoError(t, err)
+	assert.Equal(t, "JIRA URL correction", title)
+	assert.True(t, sawPrompt, "summarize prompt should be sent to the model")
+}
+
+func TestProviderSummarizeSessionEmptyReplyIsError(t *testing.T) {
+	srv := streamingServer(t, []string{"   "}, nil)
+	defer srv.Close()
+
+	p, err := New(Config{BaseURL: srv.URL, Model: "m", HTTPClient: srv.Client()})
+	require.NoError(t, err)
+
+	res, err := p.CreateSession(context.Background(), agents.CreateSessionOptions{})
+	require.NoError(t, err)
+
+	_, err = p.SummarizeSession(context.Background(), res.ProviderSessionID)
+	assert.Error(t, err)
+}
+
+func TestProviderSummarizeSessionMissingSession(t *testing.T) {
+	p, err := New(Config{BaseURL: "http://example.invalid", Model: "m"})
+	require.NoError(t, err)
+
+	_, err = p.SummarizeSession(context.Background(), "nonexistent")
+	assert.ErrorIs(t, err, agents.ErrProviderSessionUnavailable)
+}
+
+func TestSanitizeTitle(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{`"Quoted Title"`, "Quoted Title"},
+		{"  spaced   out  ", "spaced out"},
+		{"First line\nSecond line", "First line"},
+		{"- bullet title", "bullet title"},
+		{"```\ncode title\n```", "code title"},
+		{"   ", ""},
+		{"", ""},
+	}
+	for _, c := range cases {
+		assert.Equalf(t, c.want, sanitizeTitle(c.in), "input %q", c.in)
+	}
+}

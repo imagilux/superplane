@@ -5,6 +5,8 @@ export type AgentChat = {
   canvasId: string;
   provider: string;
   status: string;
+  title: string;
+  archivedAt: string | null;
   createdAt: string | null;
   updatedAt: string | null;
 };
@@ -50,6 +52,8 @@ export function fromApiChat(input: AgentsAgentChatInfo | undefined): AgentChat |
     canvasId: input.canvasId ?? "",
     provider: input.provider ?? "",
     status: input.status ?? "idle",
+    title: input.title ?? "",
+    archivedAt: input.archivedAt ?? null,
     createdAt: input.createdAt ?? null,
     updatedAt: input.updatedAt ?? null,
   };

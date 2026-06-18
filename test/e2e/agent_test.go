@@ -294,7 +294,7 @@ func (s *agentSteps) currentAgentSession() *models.AgentSession {
 
 	var agentSession *models.AgentSession
 	require.Eventually(s.t, func() bool {
-		session, err := models.FindAgentSessionByCanvasInTransaction(
+		session, err := models.FindActiveAgentSessionByCanvasInTransaction(
 			database.Conn(),
 			s.session.OrgID,
 			user.ID,

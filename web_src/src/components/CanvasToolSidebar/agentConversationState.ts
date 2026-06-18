@@ -27,6 +27,41 @@ export function useConversationMessages(
   );
 }
 
+// buildDisplayMessages prepends a synthetic greeting (and, on a fresh canvas,
+// the boot template intro) so they always lead the transcript regardless of
+// what the server returns.
+export function buildDisplayMessages(
+  rawMessages: AgentMessage[],
+  greetingFirstName: string,
+  bootInitialMessage: string | null,
+): AgentMessage[] {
+  const greeting: AgentMessage = {
+    id: "__greeting__",
+    role: "assistant",
+    content: `Hi ${greetingFirstName}! I'm your SuperPlane agent. I'll help you build and modify this canvas.`,
+    createdAt: rawMessages[0]?.createdAt ?? null,
+    toolCallId: "",
+    toolName: "",
+    toolStatus: "",
+  };
+
+  if (!bootInitialMessage) {
+    return [greeting, ...rawMessages];
+  }
+
+  const templateIntro: AgentMessage = {
+    id: "__boot_initial_message__",
+    role: "assistant",
+    content: bootInitialMessage,
+    createdAt: rawMessages[0]?.createdAt ?? null,
+    toolCallId: "",
+    toolName: "",
+    toolStatus: "",
+  };
+
+  return [greeting, templateIntro, ...rawMessages];
+}
+
 export function useThinkingIndicator(messages: AgentMessage[], status: string): boolean {
   const hasRunningTool = useMemo(() => hasActiveTool(messages), [messages]);
   return status === "streaming" && !hasRunningTool;

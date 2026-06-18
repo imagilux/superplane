@@ -61,9 +61,10 @@ type Provider struct {
 }
 
 var (
-	_ agents.Provider               = (*Provider)(nil)
-	_ agents.ProviderSessionCleaner = (*Provider)(nil)
-	_ agents.CustomToolResultSender = (*Provider)(nil)
+	_ agents.Provider                  = (*Provider)(nil)
+	_ agents.ProviderSessionCleaner    = (*Provider)(nil)
+	_ agents.ProviderSessionSummarizer = (*Provider)(nil)
+	_ agents.CustomToolResultSender    = (*Provider)(nil)
 )
 
 // New validates the endpoint config and returns a Provider. BaseURL and Model
@@ -418,6 +419,57 @@ func parseGradeVerdict(text string) (bool, string, error) {
 		return false, strings.TrimSpace(text), nil
 	}
 	return v.Satisfied, strings.TrimSpace(v.Explanation), nil
+}
+
+// SummarizeSession asks the model for a short title describing the session's
+// conversation, via a tool-less completion over the current history. The reply
+// is reduced to a single clean line; an empty result is an error so the caller
+// can fall back to a heuristic title.
+func (p *Provider) SummarizeSession(ctx context.Context, providerSessionID string) (string, error) {
+	s, err := p.getSession(providerSessionID)
+	if err != nil {
+		return "", err
+	}
+
+	prompt := "Summarize this conversation as a short title of at most 6 words. " +
+		"Do not do any further work or call any tools. Respond with ONLY the title text — no quotes, no trailing punctuation."
+	history := append(s.snapshotHistory(), chatMessage{Role: "user", Content: prompt})
+
+	var content strings.Builder
+	err = p.streamCompletion(ctx, history, false, func(chunk chatCompletionChunk) error {
+		if chunk.Error != nil && chunk.Error.Message != "" {
+			return errors.New(chunk.Error.Message)
+		}
+		for _, choice := range chunk.Choices {
+			content.WriteString(choice.Delta.Content)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+
+	answer, _ := splitReasoning(content.String())
+	title := sanitizeTitle(answer)
+	if title == "" {
+		return "", fmt.Errorf("openai: empty session summary")
+	}
+	return title, nil
+}
+
+// sanitizeTitle reduces a model reply to one clean title line: the first
+// non-empty line, with wrapping quotes/backticks/markdown markers stripped,
+// inner whitespace collapsed, and length capped.
+func sanitizeTitle(s string) string {
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.Trim(strings.TrimSpace(line), "\"'`*#- ")
+		line = strings.Join(strings.Fields(line), " ")
+		if line == "" {
+			continue
+		}
+		return truncate(line, 80)
+	}
+	return ""
 }
 
 // StreamEvents drains the session's event channel until a terminal event, ctx

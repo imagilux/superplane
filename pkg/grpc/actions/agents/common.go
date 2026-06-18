@@ -22,6 +22,8 @@ type AgentsService interface {
 	SendMessage(ctx context.Context, organizationID, userID, sessionID uuid.UUID, content string, mode ...string) (*models.AgentSessionMessage, error)
 	InterruptSession(ctx context.Context, organizationID, userID, sessionID uuid.UUID) error
 	DefineOutcome(ctx context.Context, organizationID, userID, sessionID uuid.UUID, description, rubric string, maxIterations int) error
+	ArchiveCurrentSession(ctx context.Context, organizationID, userID, sessionID uuid.UUID) (*models.AgentSession, error)
+	ListArchivedSessions(ctx context.Context, organizationID, userID, canvasID uuid.UUID, offset, limit int) ([]models.AgentSession, int64, error)
 }
 
 func agentModeFromProto(mode pb.AgentMode) string {
@@ -63,12 +65,16 @@ func serializeChat(session *models.AgentSession) *pb.AgentChatInfo {
 		CanvasId: session.CanvasID.String(),
 		Provider: session.Provider,
 		Status:   session.Status,
+		Title:    session.Title,
 	}
 	if session.CreatedAt != nil {
 		info.CreatedAt = timestamppb.New(*session.CreatedAt)
 	}
 	if session.UpdatedAt != nil {
 		info.UpdatedAt = timestamppb.New(*session.UpdatedAt)
+	}
+	if session.ArchivedAt != nil {
+		info.ArchivedAt = timestamppb.New(*session.ArchivedAt)
 	}
 	return info
 }
