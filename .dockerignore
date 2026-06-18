@@ -1,0 +1,10 @@
+.git
+main
+tmp/
+build/
+web_src/node_modules
+web_src/dist
+junit-report.xml
+screenshot.png
+*.log
+release/superplane-cli-npm/node_modules
